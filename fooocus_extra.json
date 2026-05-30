@@ -3,47 +3,47 @@
   "id": "crispz",
   "name": "Crispz - Z-Image upscaler + detailer",
   "version": "0.1.0",
-  "description": "Upscale ESRGAN + passe de raffinement Z-Image Turbo (img2img BF16). Process externe, appele en CLI.",
+  "description": "ESRGAN upscale + Z-Image Turbo refinement pass (img2img BF16). External process, invoked via CLI.",
   "repo": "https://github.com/mikecastrodemaria/crispz",
-  "license_note": "Modeles tires a part (HuggingFace pour Z-Image, dossier ESRGAN local).",
+  "license_note": "Models pulled separately (HuggingFace for Z-Image, local ESRGAN folder).",
 
   "runtime": {
     "type": "cli",
     "requires_gpu": true,
     "isolation": "process",
-    "note_isolation": "crispz tourne dans SON environnement (torch 2.7 / cu128 + diffusers source). Ne JAMAIS l'importer dans le process Fooocus."
+    "note_isolation": "crispz runs in ITS OWN environment (torch 2.7 / cu128 + diffusers from source). NEVER import it into the Fooocus process."
   },
 
   "env": {
     "python": ">=3.10",
     "venv": true,
-    "comment": "Deux strategies au choix de l'hote. Defaut = fresh_venv. crispz a besoin de torch 2.7 cu128 que Fooocus n'a pas, d'ou l'etape torch explicite.",
+    "comment": "Two strategies, host's choice. Default = fresh_venv. crispz needs torch 2.7 cu128 which Fooocus does not have, hence the explicit torch step.",
     "strategies": {
       "fresh_venv": {
-        "description": "Cree un venv neuf et installe torch cu128 puis les deps.",
+        "description": "Create a fresh venv and install torch cu128 then the deps.",
         "create": ["python", "-m", "venv", ".venv"],
         "steps": [
           {
             "name": "torch cu128",
             "cmd": ["{venv_pip}", "install", "torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cu128"],
-            "warn": "Version torch a confirmer contre le build cible (PROJECT_BRIEF: 2.7/cu128)."
+            "warn": "Confirm the torch version against the target build (2.7/cu128)."
           },
           {
-            "name": "deps crispz",
+            "name": "crispz deps",
             "cmd": ["{venv_pip}", "install", "-r", "requirements.txt"]
           }
         ]
       },
       "reuse_python": {
-        "description": "Reutilise un interpreteur qui a deja torch 2.7 cu128 (le py -3.10 systeme de la machine), via --system-site-packages.",
+        "description": "Reuse an interpreter that already has torch 2.7 cu128 (the machine's system py -3.10), via --system-site-packages.",
         "create": ["{base_python}", "-m", "venv", "--system-site-packages", ".venv"],
         "steps": [
           {
-            "name": "deps crispz (torch herite)",
+            "name": "crispz deps (inherited torch)",
             "cmd": ["{venv_pip}", "install", "-r", "requirements.txt"]
           }
         ],
-        "base_python_hint": "Chemin a fournir par l'utilisateur a l'install (ex: py -3.10)."
+        "base_python_hint": "Path to be provided by the user at install time (e.g. py -3.10)."
       }
     }
   },
@@ -55,44 +55,44 @@
     "output": {
       "mode": "print_output",
       "flag": "--print-output",
-      "parse": "Chaque ligne de stdout est un chemin absolu d'image de sortie.",
+      "parse": "Each stdout line is an absolute path to an output image.",
       "save_mode_flag": ["--save-mode", "custom"],
       "save_dir_flag": ["--output-dir", "{output_dir}"],
       "format_flag": ["--output-format", "png"]
     },
     "models_arg": ["--esrgan-dir", "{esrgan_dir}"],
     "vram_report_flag": "--report-vram",
-    "exit_codes": {"0": "ok", "other": "erreur (voir stderr)"}
+    "exit_codes": {"0": "ok", "other": "error (see stderr)"}
   },
 
   "params": [
     {
-      "key": "model", "label": "Modele ESRGAN", "type": "dropdown",
+      "key": "model", "label": "ESRGAN model", "type": "dropdown",
       "arg": "-m", "choices_cmd": ["--list-models"],
-      "choices_parse": "un nom de fichier par ligne sur stdout"
+      "choices_parse": "one file name per line on stdout"
     },
-    {"key": "factor",  "label": "Facteur",  "type": "slider",  "arg": "--factor",  "min": 1.0, "max": 4.0, "step": 0.5,  "default": 2.0},
+    {"key": "factor",  "label": "Factor",  "type": "slider",  "arg": "--factor",  "min": 1.0, "max": 4.0, "step": 0.5,  "default": 2.0},
     {"key": "denoise", "label": "Denoise",  "type": "slider",  "arg": "--denoise", "min": 0.0, "max": 0.8, "step": 0.05, "default": 0.30},
     {"key": "steps",   "label": "Steps",    "type": "slider",  "arg": "--steps",   "min": 4,   "max": 30,  "step": 1,    "default": 12},
     {"key": "prompt",  "label": "Prompt",   "type": "text",    "arg": "--prompt",  "default": ""},
-    {"key": "seed",    "label": "Seed",     "type": "number",  "arg": "--seed",    "default": -1, "note": "-1 = aleatoire"},
-    {"key": "tile",    "label": "Tile ESRGAN",  "type": "number", "arg": "--tile",    "default": 760, "note": "0 = desactive"},
+    {"key": "seed",    "label": "Seed",     "type": "number",  "arg": "--seed",    "default": -1, "note": "-1 = random"},
+    {"key": "tile",    "label": "ESRGAN tile",  "type": "number", "arg": "--tile",    "default": 760, "note": "0 = disabled"},
     {"key": "overlap", "label": "Overlap",      "type": "number", "arg": "--overlap", "default": 32}
   ],
 
   "host_hints": {
     "offload_host_model_before_run": true,
-    "reason": "crispz charge ESRGAN + Z-Image BF16. Sur GPU partage, decharger le modele SDXL de Fooocus avant l'appel evite l'OOM.",
+    "reason": "crispz loads ESRGAN + Z-Image BF16. On a shared GPU, offloading the Fooocus SDXL model before the call avoids OOM.",
     "heavy": true,
     "vram_gb_min": 32,
     "vram_measured": {
-      "gpu": "RTX 5090 32 Go (32607 MiB ~= 31.8 Gio)",
+      "gpu": "RTX 5090 32 GB (32607 MiB ~= 31.8 GiB)",
       "date": "2026-05-30",
       "baseline_idle_gb": 1.2,
       "pipeline_2k": {"target": "1664x2432", "denoise": 0.30, "steps": 12, "peak_alloc_gb": 28.48, "peak_reserved_gb": 32.35},
-      "pipeline_4k": "non mesure: le 2K sature deja la carte, OOM attendu en image entiere",
-      "note": "Re-mesure carte au repos (baseline 1.2 Go): memes chiffres -> footprint reel de crispz, pas une contamination. Pic reserve (32.35) > VRAM physique (31.8 Gio) = spill en memoire partagee Windows (WDDM), lent. crispz est donc deja a la limite VRAM seul en 2K."
+      "pipeline_4k": "not measured: 2K already saturates the card, OOM expected in whole-image mode",
+      "note": "Re-measured on an idle card (1.2 GB baseline): same numbers -> crispz's real footprint, not contamination. Reserved peak (32.35) > physical VRAM (31.8 GiB) = spill into Windows shared memory (WDDM), slow. So crispz is already at the VRAM limit alone at 2K."
     },
-    "vram_note": "Pipeline complet 2K sature deja une carte 32 Go (pic reserve 32.35 Go). Cohabitation avec Fooocus charge impossible sans offload: decharger imperativement le modele hote avant l'appel. 4K image-entiere non viable sans tiling diffusion ou --cpu-offload (palier 2, a venir cote crispz)."
+    "vram_note": "Full pipeline at 2K already saturates a 32 GB card (reserved peak 32.35 GB). Coexisting with a loaded Fooocus is impossible without offload: the host model MUST be offloaded before the call. 4K whole-image is not viable without diffusion tiling or --cpu-offload (stage 2, upcoming on the crispz side)."
   }
 }

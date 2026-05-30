@@ -2,36 +2,36 @@
 
 > Z-Image based upscaler + detailer (hi-res fix).
 
-Outil standalone d'upscale + denoise d'images, **100% local**, sans ComfyUI ni
-SwarmUI. Deux etages:
+A standalone image upscaling + denoising tool, **100% local**, with no ComfyUI or
+SwarmUI. Two stages:
 
-1. **Real-ESRGAN** (charge via `spandrel`) pour l'agrandissement reel des pixels,
-   avec tiling overlap-add + feather lineaire.
-2. **Z-Image Turbo** en img2img (`diffusers`, BF16) pour une passe de raffinement
-   a bas denoise qui reinjecte du detail sans casser la composition.
+1. **Real-ESRGAN** (loaded via `spandrel`) for true pixel enlargement, with
+   overlap-add tiling + linear feathering.
+2. **Z-Image Turbo** img2img (`diffusers`, BF16) for a low-denoise refinement pass
+   that reinjects detail without breaking the composition.
 
-Interface Gradio + mode CLI scriptable + CLI interactif avec preferences.
+Gradio UI + scriptable CLI + interactive CLI with saved preferences.
 
 ---
 
 ## Installation
 
-### Pre-requis
+### Requirements
 
 - Python 3.10+
-- PyTorch **deja installe** avec ton build CUDA (le brief vise PyTorch 2.7+/
-  CUDA 12.8). **Ne JAMAIS reinstaller torch** depuis ce projet, il s'aligne sur
-  ton environnement existant.
-- Un GPU NVIDIA avec >= 8 Go VRAM est conseille. RTX 5090 testee en BF16
-  natif, image entiere jusqu'a 2048px sans broncher.
+- PyTorch **already installed** with your CUDA build (the project targets
+  PyTorch 2.7+ / CUDA 12.8). **NEVER reinstall torch** from this project; it
+  aligns with your existing environment.
+- An NVIDIA GPU with >= 8 GB VRAM is recommended. RTX 5090 tested in native BF16,
+  whole-image up to 2048px without trouble.
 
-### Scripts d'install fournis
+### Provided install scripts
 
 ```bash
 # Linux / macOS / WSL
 ./install.sh
-./run.sh           # UI Gradio + detection hardware
-./cli.sh           # CLI interactive avec preferences
+./run.sh           # Gradio UI + hardware detection
+./cli.sh           # interactive CLI with preferences
 
 # Windows
 install.bat
@@ -39,172 +39,172 @@ run.bat
 cli.bat
 ```
 
-Les scripts d'install:
-- verifient que Python et PyTorch sont presents (sans toucher a torch),
-- desinstallent automatiquement un `xformers` casse (build pour une mauvaise
-  version de torch -> DLL load error au chargement de diffusers),
-- installent les autres deps depuis `requirements.txt`,
-- verifient que `ZImageImg2ImgPipeline` se charge,
-- creent le dossier `upscale_models/`.
+The install scripts:
+- check that Python and PyTorch are present (without touching torch),
+- automatically uninstall a broken `xformers` (built for the wrong torch
+  version -> DLL load error when diffusers loads),
+- install the other deps from `requirements.txt`,
+- verify that `ZImageImg2ImgPipeline` loads,
+- create the `upscale_models/` folder.
 
-Install manuel equivalent:
+Equivalent manual install:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Pieges connus d'environnement
+### Known environment pitfalls
 
-- **`xformers` incompatible.** Si une version de `xformers` est installee mais
-  buildee pour un autre torch (ex: `xformers` pour torch 2.9 alors que tu as
-  torch 2.8), diffusers plante avec `DLL load failed while importing _C` au
-  chargement du VAE. Solution: `pip uninstall xformers`. Le SDPA natif de
-  torch 2.7+ suffit.
-- **`transformers` trop ancien.** `ZImageImg2ImgPipeline` charge un encodeur
-  qui importe `Dinov2WithRegistersConfig`, present depuis transformers >= 4.49.
-  Le requirements pin cette borne.
-- **diffusers depuis git.** Z-Image n'est dans diffusers que depuis la source
-  (pas dans les releases au moment de l'ecriture), d'ou le `git+...` du
-  requirements.
+- **Incompatible `xformers`.** If an `xformers` version is installed but built
+  for a different torch (e.g. `xformers` for torch 2.9 while you have torch 2.8),
+  diffusers crashes with `DLL load failed while importing _C` when loading the
+  VAE. Fix: `pip uninstall xformers`. The native SDPA in torch 2.7+ is enough.
+- **`transformers` too old.** `ZImageImg2ImgPipeline` loads an encoder that
+  imports `Dinov2WithRegistersConfig`, available since transformers >= 4.49.
+  The requirements pin this lower bound.
+- **diffusers from git.** Z-Image is only in diffusers from source (not in the
+  releases at the time of writing), hence the `git+...` in requirements.
 
 ---
 
-## Chemins configurables (ESRGAN_DIR + Z-Image)
+## Configurable paths (ESRGAN_DIR + Z-Image)
 
-Deux chemins sont configurables, avec persistance dans `preferences.json`.
-Ordre de priorite a chaque lancement:
+Two paths are configurable, persisted in `preferences.json`. Resolution order on
+each launch:
 
-1. Variable d'environnement (`ESRGAN_DIR`, `ZIMAGE_MODEL`)
-2. `preferences.json` a la racine du projet
-3. Defaut: `./upscale_models` pour ESRGAN, `Tongyi-MAI/Z-Image-Turbo` pour Z-Image
+1. Environment variable (`ESRGAN_DIR`, `ZIMAGE_MODEL`)
+2. `preferences.json` at the project root
+3. Default: `./upscale_models` for ESRGAN, `Tongyi-MAI/Z-Image-Turbo` for Z-Image
 
-Trois facons de les modifier:
+Three ways to change them:
 
-- **UI Gradio**: accordion "Chemins / modeles" en haut. Boutons "Rafraichir la
-  liste ESRGAN", "Appliquer Z-Image" (invalide le pipe pour recharger), et
-  "Sauver dans preferences.json".
-- **CLI**: `--esrgan-dir <path>`, `--zimage-model <repo_ou_path>`, `--save-paths`
-  pour persister (avec ou sans `-i`).
-- **CLI interactive** (`cli.sh` / `cli.bat`): premier prompt = dossier ESRGAN
-  + modele Z-Image. Sauves dans `preferences.json` si tu choisis de garder.
+- **Gradio UI**: "Paths / models" accordion at the top. Buttons "Refresh ESRGAN
+  list", "Apply Z-Image" (invalidates the pipe so it reloads), and "Save to
+  preferences.json".
+- **CLI**: `--esrgan-dir <path>`, `--zimage-model <repo_or_path>`, `--save-paths`
+  to persist (with or without `-i`).
+- **Interactive CLI** (`cli.sh` / `cli.bat`): first prompt = ESRGAN folder +
+  Z-Image model. Saved to `preferences.json` if you choose to keep them.
 
-`zimage_model` accepte aussi bien un repo HF (ex `Tongyi-MAI/Z-Image-Turbo`)
-qu'un chemin local vers un dossier `diffusers` deja telecharge.
+`zimage_model` accepts either an HF repo (e.g. `Tongyi-MAI/Z-Image-Turbo`) or a
+local path to an already-downloaded `diffusers` folder.
 
-## Modeles ESRGAN
+## ESRGAN models
 
-Depose au moins un `.pth` ou `.safetensors` dans `./upscale_models`, ou pointe
-`ESRGAN_DIR` (env ou prefs) vers un dossier existant.
+Drop at least one `.pth` or `.safetensors` into `./upscale_models`, or point
+`ESRGAN_DIR` (env or prefs) at an existing folder.
 
-Quelques choix utiles:
+A few useful picks:
 - `RealESRGAN_x4plus.pth` (general)
-- `4x-UltraSharp.pth` (net, polyvalent)
-- `4x-ClearRealityV1_Soft.safetensors` (doux, bon sur portraits/scenes)
-- `4xFaceUpDAT.pth` (portraits/visages)
+- `4x-UltraSharp.pth` (sharp, versatile)
+- `4x-ClearRealityV1_Soft.safetensors` (soft, good on portraits/scenes)
+- `4xFaceUpDAT.pth` (portraits/faces)
 
-`spandrel` detecte l'architecture et le facteur (x2 / x4) automatiquement.
-
----
-
-## Z-Image (premier run)
-
-Aucun fichier a fournir: au premier lancement, `diffusers` recupere depuis
-Hugging Face le transformer Z-Image, le VAE et l'encodeur texte Qwen3-4B,
-puis tout est cache en local. Les runs suivants sont hors-ligne.
+`spandrel` detects the architecture and the scale (x2 / x4) automatically.
 
 ---
 
-## Lancement
+## Z-Image (first run)
 
-### 1) UI Gradio (par defaut)
+No file to provide: on first launch, `diffusers` fetches the Z-Image transformer,
+the VAE and the Qwen3-4B text encoder from Hugging Face, then everything is cached
+locally. Subsequent runs are offline.
+
+---
+
+## Running
+
+### 1) Gradio UI (default)
 
 ```bash
 python app.py
 ```
 
-Interface sur http://127.0.0.1:7860. L'UI inclut:
+UI at http://127.0.0.1:7860. It includes:
 
-- **Slider avant/apres** (`gradio_imageslider`) qui superpose la source et le
-  resultat avec un curseur a la souris. Fallback en deux images cote a cote
-  si le composant n'est pas installe.
-- **Rapport de temps** sous l'image: ESRGAN, raffinement Z-Image, total, chemin source, chemin de sauvegarde.
-- **Section "Sauvegarde"** avec les memes modes que la CLI.
-- **Mode batch**: si tu remplis "OU dossier source", l'image uploadee est ignoree et l'app traite tout le dossier.
+- **Before/after slider** (`gradio_imageslider`) that overlays source and result
+  with a mouse cursor. Falls back to two side-by-side images if the component is
+  not installed.
+- **Timing report** under the image: ESRGAN, Z-Image refine, total, source path,
+  save path.
+- **"Save" section** with the same modes as the CLI.
+- **Batch mode**: if you fill in "OR source folder", the uploaded image is ignored
+  and the app processes the whole folder.
 
-### 2) CLI scriptable
+### 2) Scriptable CLI
 
 ```bash
-# Une image, reglages explicites
-python app.py --cli -i mon_image.jpg \
+# Single image, explicit settings
+python app.py --cli -i my_image.jpg \
     --save-mode local --output-dir out --output-format png \
     -m 4x-ClearRealityV1_Soft.safetensors \
     --factor 2 --denoise 0.30 --steps 12 --tile 760 --overlap 32
 
-# Batch sur un dossier entier
-python app.py --cli -i ./mes_images --save-mode local --output-dir out --output-format webp
+# Batch over a whole folder
+python app.py --cli -i ./my_images --save-mode local --output-dir out --output-format webp
 
-# Sauvegarde a cote de chaque source (mode "alongside")
-python app.py --cli -i ./mes_images --save-mode alongside --output-format jpg
+# Save next to each source ("alongside" mode)
+python app.py --cli -i ./my_images --save-mode alongside --output-format jpg
 
-# Display only (pas de fichier ecrit), juste le timing dans stdout
-python app.py --cli -i mon_image.jpg --save-mode display --denoise 0
+# Display only (no file written), just the timing on stdout
+python app.py --cli -i my_image.jpg --save-mode display --denoise 0
 
-# Avec log TSV pour suivre les temps
-python app.py --cli -i ./mes_images --save-mode local --time-log runs.tsv
+# With a TSV log to track timings
+python app.py --cli -i ./my_images --save-mode local --time-log runs.tsv
 ```
 
-### 3) CLI interactive avec preferences
+### 3) Interactive CLI with preferences
 
 ```bash
-./cli.sh   # ou cli.bat sous Windows
+./cli.sh   # or cli.bat on Windows
 ```
 
-Demande chaque reglage (chemins, modeles, source, pipeline, sauvegarde,
-time-log) avec valeur par defaut depuis `preferences.json`. Propose
-de sauver les choix en fin de session.
+Prompts for each setting (paths, models, source, pipeline, save, time-log) with a
+default value from `preferences.json`. Offers to save the choices at the end of the
+session.
 
 ## Mapping UI <-> CLI <-> preferences.json
 
-Chaque reglage de l'UI a un flag CLI et une cle de prefs:
+Every UI setting has a CLI flag and a prefs key:
 
-| UI / CLI interactive | CLI flag | preferences.json | Defaut |
+| UI / interactive CLI | CLI flag | preferences.json | Default |
 |---|---|---|---|
 | ESRGAN_DIR | `--esrgan-dir` | `esrgan_dir` | `./upscale_models` |
-| Modele Z-Image | `--zimage-model` | `zimage_model` | `Tongyi-MAI/Z-Image-Turbo` |
-| Image source | `-i` (fichier ou glob) | - | - |
-| Dossier source batch | `-i` (dossier) ou `--input-folder` | - | - |
-| Modele ESRGAN | `-m` / `--model` | `model` | `4x-ClearRealityV1_Soft.safetensors` |
-| Facteur agrandissement | `--factor` | `factor` | `2.0` |
+| Z-Image model | `--zimage-model` | `zimage_model` | `Tongyi-MAI/Z-Image-Turbo` |
+| Source image | `-i` (file or glob) | - | - |
+| Batch source folder | `-i` (folder) or `--input-folder` | - | - |
+| ESRGAN model | `-m` / `--model` | `model` | `4x-ClearRealityV1_Soft.safetensors` |
+| Upscale factor | `--factor` | `factor` | `2.0` |
 | Denoise (strength) | `--denoise` | `denoise` | `0.30` |
-| Steps diffusion | `--steps` | `steps` | `12` |
+| Diffusion steps | `--steps` | `steps` | `12` |
 | Prompt | `--prompt` | `prompt` | `""` |
 | Seed | `--seed` | `seed` | `-1` |
-| Tile ESRGAN | `--tile` | `tile` | `760` |
+| ESRGAN tile | `--tile` | `tile` | `760` |
 | Overlap | `--overlap` | `overlap` | `32` |
-| Mode sauvegarde | `--save-mode` | `save_mode` | `display` |
-| Dossier de sortie | `--output-dir` | `output_dir` | `out` |
-| Format sortie | `--output-format` | `output_format` | `png` |
-| Log temps (CLI) | `--time-log <file.tsv>` | `time_log` | (vide) |
-| Sauve les paths (CLI) | `--save-paths` | - | - |
-| Lister modeles (CLI) | `--list-models` | - | - |
-| Pic VRAM sur stderr (CLI) | `--report-vram` | - | - |
-| Chemin de sortie seul (CLI) | `--print-output` | - | - |
+| Save mode | `--save-mode` | `save_mode` | `display` |
+| Output folder | `--output-dir` | `output_dir` | `out` |
+| Output format | `--output-format` | `output_format` | `png` |
+| Time log (CLI) | `--time-log <file.tsv>` | `time_log` | (empty) |
+| Save paths (CLI) | `--save-paths` | - | - |
+| List models (CLI) | `--list-models` | - | - |
+| VRAM peak on stderr (CLI) | `--report-vram` | - | - |
+| Output path only (CLI) | `--print-output` | - | - |
 
-Modes de sauvegarde:
+Save modes:
 
-| save_mode | Comportement |
+| save_mode | Behavior |
 |---|---|
-| `display` | N'ecrit rien. UI rend l'image + timing. CLI imprime le rapport. |
-| `local` | Ecrit dans `output_dir` resolu **relatif au projet** si non absolu. |
-| `alongside` | Ecrit dans le **meme dossier que la source**. Necessite un chemin source (CLI ou batch dossier). |
-| `custom` | Ecrit dans `output_dir` tel quel (typiquement un chemin absolu). |
+| `display` | Writes nothing. UI renders the image + timing. CLI prints the report. |
+| `local` | Writes to `output_dir`, resolved **relative to the project** if not absolute. |
+| `alongside` | Writes to the **same folder as the source**. Requires a source path (CLI or batch folder). |
+| `custom` | Writes to `output_dir` as-is (typically an absolute path). |
 
-Naming par defaut: `{nom_source}_upscaled.{png|webp|jpg}`. En CLI, `-o` accepte
-un fichier (override le naming auto), un dossier (equivalent a
-`--save-mode local --output-dir <dossier>`) ou est omis (utilise
+Default naming: `{source_name}_upscaled.{png|webp|jpg}`. On the CLI, `-o` accepts
+a file (overrides auto naming), a folder (equivalent to
+`--save-mode local --output-dir <folder>`), or is omitted (uses
 `--save-mode` / `--output-dir`).
 
-Exemple `preferences.json` complet:
+Full `preferences.json` example:
 
 ```json
 {
@@ -225,17 +225,16 @@ Exemple `preferences.json` complet:
 }
 ```
 
-## Rapport de temps
+## Timing report
 
-`run()` retourne (et imprime / log) le temps de chaque etage:
+`run()` returns (and prints / logs) the time of each stage:
 
-- `esrgan` : etage 1 (Real-ESRGAN + Lanczos de recadrage)
-- `refine` : etage 2 (Z-Image img2img). 0s si `denoise <= 0`.
-- `total`  : somme
+- `esrgan` : stage 1 (Real-ESRGAN + Lanczos resize)
+- `refine` : stage 2 (Z-Image img2img). 0s if `denoise <= 0`.
+- `total`  : sum
 
-L'UI affiche un bloc Markdown sous l'image. La CLI imprime le rapport dans
-stdout (sauf `--quiet`). Avec `--time-log <fichier>`, chaque run ajoute une
-ligne TSV:
+The UI shows a Markdown block under the image. The CLI prints the report on
+stdout (unless `--quiet`). With `--time-log <file>`, each run appends a TSV line:
 
 ```
 <iso-timestamp>\t<src>\t<dst>\tesrgan=2.24s\trefine=1.87s\tmode=local\tfmt=png
@@ -243,68 +242,71 @@ ligne TSV:
 
 ---
 
-## Integration externe (Fooocus, scripts)
+## External integration (Fooocus, scripts)
 
-Deux flags facilitent l'appel de crispz depuis un autre outil (process separe):
+Two flags make it easy to call crispz from another tool (separate process):
 
-- `--print-output` : stdout ne contient QUE le chemin absolu de chaque image
-  sauvee (un par ligne), rien d'autre. Le rapport lisible est supprime. C'est
-  le contrat machine-parsable a utiliser pour recuperer le resultat.
-- `--report-vram` : pic VRAM du run sur **stderr** (ligne `[VRAM] pic alloue:
-  X.XX Go | pic reserve: Y.YY Go`). Sur stderr, donc sans polluer le stdout de
-  `--print-output`. Sert a dimensionner la cohabitation VRAM (ex: avec Fooocus).
+- `--print-output` : stdout contains ONLY the absolute path of each saved image
+  (one per line), nothing else. The human-readable report is suppressed. This is
+  the machine-parsable contract for retrieving the result.
+- `--report-vram` : run VRAM peak on **stderr** (line `[VRAM] pic alloue:
+  X.XX Go | pic reserve: Y.YY Go`). On stderr, so it does not pollute the stdout
+  of `--print-output`. Used to size VRAM coexistence (e.g. with Fooocus).
 
 ```bash
-# L'appelant lit le chemin de sortie sur stdout, la VRAM sur stderr
+# The caller reads the output path on stdout, VRAM on stderr
 dst=$(python app.py --cli -i in.png --save-mode local --output-dir out \
     --print-output --report-vram 2>vram.log)
-echo "image upscalee: $dst"
+echo "upscaled image: $dst"
 ```
 
-`--print-output` requiert un mode de sauvegarde qui ecrit un fichier
-(`local` / `alongside` / `custom`). En `display` rien n'est ecrit, donc rien
-n'est imprime.
+`--print-output` requires a save mode that writes a file
+(`local` / `alongside` / `custom`). In `display` nothing is written, so nothing
+is printed.
 
 ---
 
-## Reglages utiles
+## Useful settings
 
-| Reglage | Conseil |
+| Setting | Advice |
 |---|---|
-| **Denoise (strength)** | 0.05-0.25 = subtil, reste tres proche de l'input. 0.25-0.40 = creatif, plus de detail injecte. Au-dela de ~0.40, Z-Image commence a reinventer. A fort denoise, un **prompt-caption detaille** ameliore beaucoup la coherence. |
-| **Steps** | Steps reels ~= `steps * strength`. A strength 0.30, 12-16 steps donnent assez de pas de debruitage. |
-| **Guidance** | Fixee a 0.0 (Z-Image Turbo). |
-| **Prompt** | Optionnel. Vide marche tres bien si denoise <= 0.30. |
-| **Facteur** | ESRGAN agit en x4 natif, puis Lanczos redimensionne au facteur demande. Pour un x2 net, l'image passe par un x4 brut. |
-| **Tiling ESRGAN** | 0 (image entiere) sur 24+ Go VRAM. 512-768 sinon. Overlap 32 par defaut, augmente si tu vois des coutures. |
+| **Denoise (strength)** | 0.05-0.25 = subtle, stays very close to the input. 0.25-0.40 = creative, more detail injected. Beyond ~0.40, Z-Image starts to reinvent. At high denoise, a **detailed caption prompt** greatly improves coherence. |
+| **Steps** | Effective steps ~= `steps * strength`. At strength 0.30, 12-16 steps give enough denoising steps. |
+| **Guidance** | Fixed at 0.0 (Z-Image Turbo). |
+| **Prompt** | Optional. Empty works very well if denoise <= 0.30. |
+| **Factor** | ESRGAN runs at native x4, then Lanczos resizes to the requested factor. For a clean x2, the image goes through a raw x4. |
+| **ESRGAN tiling** | 0 (whole image) on 24+ GB VRAM. 512-768 otherwise. Overlap 32 by default, increase if you see seams. |
 
-Le script `_hw_check.py` (appele par `run.sh` / `run.bat`) detecte ton GPU
-et donne des recommandations basees sur la VRAM, la compute capability
-(BF16 dispo a partir d'Ampere = CC 8.0), et la taille max d'image en
-passe diffusion.
+The `_hw_check.py` script (called by `run.sh` / `run.bat`) detects your GPU and
+gives recommendations based on VRAM, compute capability (BF16 available from
+Ampere = CC 8.0), and the max image size for the diffusion pass.
 
 ---
 
-## Reglages de reference
+## Reference settings
 
-Un point de depart fiable (source ~832x1216 -> x2), modele
-`4x-ClearRealityV1_Soft.safetensors`, facteur 2, denoise 0.30, steps 12,
+A reliable starting point (source ~832x1216 -> x2), model
+`4x-ClearRealityV1_Soft.safetensors`, factor 2, denoise 0.30, steps 12,
 tile 760, overlap 32:
 
 ```bash
-python app.py --cli -i mon_image.jpg -o out/mon_image_upscaled.png \
+python app.py --cli -i my_image.jpg -o out/my_image_upscaled.png \
     -m 4x-ClearRealityV1_Soft.safetensors \
     --factor 2 --denoise 0.30 --steps 12 --tile 760 --overlap 32
 ```
 
 ---
 
-## Limite connue / prochaine iteration
+## Known limitation / next iteration
 
-La passe Z-Image se fait en image entiere. Ideal jusqu'a ~2048px de cote,
-au-dela on depasse la resolution d'entrainement et des artefacts peuvent
-apparaitre.
+The Z-Image pass runs on the whole image. Ideal up to ~2048px on the long side;
+beyond that you exceed the training resolution and artifacts can appear.
 
-Prochaine etape (roadmap dans `PROJECT_BRIEF.md`): tiling de la passe
-diffusion facon Ultimate SD Upscale, avec feather, pour pousser en 4K+
-sans coutures.
+Planned next: tiling of the diffusion pass, Ultimate SD Upscale style, with
+feathering, to push to 4K+ without seams.
+
+---
+
+## License
+
+CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial). See `LICENSE.txt`.
