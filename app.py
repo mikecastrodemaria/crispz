@@ -45,6 +45,24 @@ DEFAULT_OUTPUT_FORMAT = "png"        # png | webp | jpg
 SUPPORTED_FORMATS = ("png", "webp", "jpg")
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
+# Presets "cas d'usage" -> reglages auto. Seules les cles presentes sont appliquees,
+# le reste est laisse tel quel. Utilise par l'UI (_apply_preset) et la CLI (--preset).
+PRESETS = {
+    "Custom": {},
+    "Photo (balanced)":    {"factor": 2.0, "denoise": 0.30, "steps": 12, "refine_tile": 0, "cpu_offload": "none"},
+    "Subtle (clean-up)":   {"factor": 2.0, "denoise": 0.12, "steps": 16, "refine_tile": 0},
+    "Detailed (creative)": {"factor": 2.0, "denoise": 0.40, "steps": 16},
+    "Portrait (faces)":    {"factor": 2.0, "denoise": 0.22, "steps": 14},
+    "4K (tiled)":          {"factor": 4.0, "denoise": 0.30, "steps": 12, "refine_tile": 1024, "refine_overlap": 64, "cpu_offload": "model"},
+    "Low VRAM (8-12GB)":   {"denoise": 0.30, "steps": 12, "tile": 512, "refine_tile": 1024, "refine_overlap": 64, "cpu_offload": "sequential"},
+}
+# param interne -> flag CLI, pour appliquer un preset sans ecraser un flag explicite.
+PRESET_FLAGMAP = {
+    "factor": "--factor", "denoise": "--denoise", "steps": "--steps", "tile": "--tile",
+    "overlap": "--overlap", "refine_tile": "--refine-tile", "refine_overlap": "--refine-overlap",
+    "cpu_offload": "--cpu-offload",
+}
+
 # ----------------------------------------------------------------------------
 # Config (persistance dans preferences.json a cote de app.py)
 # Ordre de priorite pour ESRGAN_DIR et BASE_REPO:
@@ -129,6 +147,29 @@ def set_offload_mode(mode):
             gc.collect()
             if DEVICE == "cuda":
                 torch.cuda.empty_cache()
+
+
+def free_vram():
+    """Libere le pipe diffusion et rend la VRAM (palier 3: unload sur inactivite
+    ou endpoint /unload). Le prochain run rechargera le pipe paresseusement."""
+    global _PIPE, _LOADED_REPO, _LOADED_OFFLOAD
+    _PIPE = None
+    _LOADED_REPO = None
+    _LOADED_OFFLOAD = None
+    gc.collect()
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
+
+
+def apply_preset_to_args(args, raw_argv):
+    """Applique un preset aux champs de args qui n'ont PAS ete passes explicitement
+    en CLI (un flag explicite gagne toujours sur le preset)."""
+    preset = PRESETS.get(getattr(args, "preset", None) or "Custom") or {}
+    raw = list(raw_argv or [])
+    for key, val in preset.items():
+        flag = PRESET_FLAGMAP[key]
+        if not any(tok == flag or tok.startswith(flag + "=") for tok in raw):
+            setattr(args, key, val)
 
 
 # ----------------------------------------------------------------------------
@@ -547,6 +588,18 @@ def _save_paths_to_prefs(esrgan_dir, zimage_model):
     return f"Saved to {PREFS_PATH}: esrgan_dir={ESRGAN_DIR}, zimage_model={BASE_REPO}"
 
 
+# Ordre des composants mis a jour par le dropdown de presets (doit matcher l'UI).
+_PRESET_UI_ORDER = ("factor", "denoise", "steps", "tile", "overlap",
+                    "refine_tile", "refine_overlap", "cpu_offload")
+
+
+def _apply_preset(name):
+    """UI: renvoie les updates des controles pour le preset choisi (ordre _PRESET_UI_ORDER).
+    Custom ou cle absente = pas de changement sur ce controle."""
+    p = PRESETS.get(name, {})
+    return [gr.update(value=p[k]) if k in p else gr.update() for k in _PRESET_UI_ORDER]
+
+
 def _pil_to_b64_jpeg(img, max_side=1600, quality=85):
     """Reduit + encode en JPEG base64 pour embarquer en HTML sans saturer la page."""
     if img is None:
@@ -636,6 +689,9 @@ def build_ui():
                     placeholder="e.g. D:/images/series_a",
                 )
                 esrgan = gr.Dropdown(models, value=default_model, label="ESRGAN model")
+                preset = gr.Dropdown(list(PRESETS), value="Custom",
+                                     label="Use case (auto settings)",
+                                     info="Fills the settings below. 'Custom' changes nothing.")
                 factor = gr.Slider(1.0, 4.0, value=DEFAULT_FACTOR, step=0.5, label="Net upscale factor")
                 denoise = gr.Slider(0.0, 0.8, value=DEFAULT_DENOISE, step=0.01,
                                     label="Denoise (strength) - 0.2-0.4 recommended")
@@ -684,6 +740,8 @@ def build_ui():
         refresh_btn.click(_refresh_models, [esrgan_dir_tb], [esrgan, paths_status])
         apply_zimage_btn.click(_apply_zimage, [zimage_model_tb], [paths_status])
         save_paths_btn.click(_save_paths_to_prefs, [esrgan_dir_tb, zimage_model_tb], [paths_status])
+        preset.change(_apply_preset, [preset],
+                      [factor, denoise, steps, tile, overlap, refine_tile, refine_overlap, offload])
         btn.click(
             _ui_run,
             inputs=[inp, source_folder_tb, esrgan, factor, denoise, steps, prompt, seed,
@@ -692,6 +750,112 @@ def build_ui():
             outputs=[out, out_slider, report],
         )
     return demo
+
+
+# ----------------------------------------------------------------------------
+# Palier 3 : serveur HTTP persistant (FastAPI), load paresseux + unload sur idle
+# ----------------------------------------------------------------------------
+def serve_main(host="127.0.0.1", port=7861, idle_timeout=300):
+    """Petit serveur HTTP. Le modele Z-Image se charge au premier /upscale et reste
+    chaud (plus de rechargement entre appels -> temps stables). Apres idle_timeout
+    secondes sans requete, la VRAM est rendue (utile pour cohabiter avec Fooocus).
+    Endpoints: GET /health, GET /models, POST /upscale, POST /unload."""
+    try:
+        import threading
+        import uvicorn
+        from fastapi import FastAPI, HTTPException
+        from pydantic import BaseModel
+    except Exception as e:
+        print("[serve] FastAPI/uvicorn required: pip install fastapi uvicorn", file=sys.stderr)
+        print(f"[serve] detail: {e}", file=sys.stderr)
+        return 1
+
+    os.makedirs(ESRGAN_DIR, exist_ok=True)
+    app = FastAPI(title="crispz")
+    lock = threading.Lock()
+    state = {"last": time.time()}
+
+    class UpscaleReq(BaseModel):
+        input: str
+        model: str = DEFAULT_MODEL
+        factor: float = DEFAULT_FACTOR
+        denoise: float = DEFAULT_DENOISE
+        steps: int = DEFAULT_STEPS
+        prompt: str = ""
+        seed: int = -1
+        tile: int = DEFAULT_TILE
+        overlap: int = DEFAULT_OVERLAP
+        refine_tile: int = DEFAULT_REFINE_TILE
+        refine_overlap: int = DEFAULT_REFINE_OVERLAP
+        cpu_offload: str = "none"
+        preset: str = "Custom"
+        save_mode: str = "local"
+        output_dir: str = DEFAULT_OUTPUT_DIR
+        output_format: str = DEFAULT_OUTPUT_FORMAT
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "device": DEVICE, "pipe_loaded": _PIPE is not None,
+                "offload": OFFLOAD_MODE, "idle_timeout": idle_timeout}
+
+    @app.get("/models")
+    def models():
+        return {"esrgan_dir": ESRGAN_DIR, "models": list_esrgan_models()}
+
+    @app.post("/unload")
+    def unload():
+        with lock:
+            free_vram()
+        return {"status": "unloaded"}
+
+    @app.post("/upscale")
+    def upscale(req: UpscaleReq):
+        if not os.path.isfile(req.input):
+            raise HTTPException(status_code=400, detail=f"input not found: {req.input}")
+        avail = list_esrgan_models()
+        if not avail:
+            raise HTTPException(status_code=400, detail=f"no ESRGAN model in {ESRGAN_DIR}")
+        # preset (s'il est fourni) sert de base; sinon les champs de la requete.
+        p = PRESETS.get(req.preset or "Custom") or {}
+        def pick(name, val):
+            return p.get(name, val)
+        model = req.model if req.model in avail else avail[0]
+        with lock:
+            state["last"] = time.time()
+            set_offload_mode(pick("cpu_offload", req.cpu_offload))
+            img = Image.open(req.input)
+            result, t = process_one(
+                img, model, pick("factor", req.factor), pick("denoise", req.denoise),
+                pick("steps", req.steps), req.prompt, req.seed,
+                pick("tile", req.tile), pick("overlap", req.overlap),
+                refine_tile=pick("refine_tile", req.refine_tile),
+                refine_overlap=pick("refine_overlap", req.refine_overlap),
+            )
+            dst = build_output_path(req.input, req.save_mode, req.output_dir, req.output_format)
+            if dst:
+                save_image(result, dst, req.output_format)
+            state["last"] = time.time()
+        return {"output": os.path.abspath(dst) if dst else None,
+                "size": list(result.size),
+                "esrgan_s": round(t.get("esrgan", 0.0), 2),
+                "refine_s": round(t.get("refine", 0.0), 2),
+                "total_s": round(t.get("esrgan", 0.0) + t.get("refine", 0.0), 2)}
+
+    def _idle_watch():
+        period = min(30, max(5, idle_timeout // 4)) if idle_timeout > 0 else 30
+        while True:
+            time.sleep(period)
+            if idle_timeout > 0 and _PIPE is not None and (time.time() - state["last"]) > idle_timeout:
+                with lock:
+                    if _PIPE is not None and (time.time() - state["last"]) > idle_timeout:
+                        free_vram()
+                        print(f"[serve] model unloaded after {idle_timeout}s idle", file=sys.stderr)
+
+    if idle_timeout and idle_timeout > 0:
+        threading.Thread(target=_idle_watch, daemon=True).start()
+    print(f"[serve] crispz on http://{host}:{port}  (idle unload: {idle_timeout}s)", file=sys.stderr)
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+    return 0
 
 
 # ----------------------------------------------------------------------------
@@ -739,6 +903,16 @@ def cli_main(argv=None):
                         help="CPU offload of the diffusion pass (VRAM). none=all in VRAM | "
                              "model=offload per submodule (good tradeoff) | "
                              "sequential=more aggressive, slower. Requires accelerate.")
+    parser.add_argument("--preset", choices=list(PRESETS), default="Custom",
+                        help="Use-case preset (auto settings). Explicit flags override it.")
+    # Server (stage 3)
+    parser.add_argument("--serve", action="store_true",
+                        help="Run a persistent HTTP server (lazy model load + idle unload) "
+                             "instead of the UI/one-shot. Requires fastapi + uvicorn.")
+    parser.add_argument("--host", default="127.0.0.1", help="Server host (--serve)")
+    parser.add_argument("--port", type=int, default=7861, help="Server port (--serve)")
+    parser.add_argument("--idle-timeout", type=int, default=300,
+                        help="Seconds of inactivity before the server frees VRAM (0 = never)")
     # Chemins config / Z-Image
     parser.add_argument("--esrgan-dir", help="Override ESRGAN_DIR for this run")
     parser.add_argument("--zimage-model", help="Override HF repo / local path for Z-Image")
@@ -757,12 +931,17 @@ def cli_main(argv=None):
                              "image), nothing else. For external integration (Fooocus). "
                              "Implies a silent stdout; the VRAM peak stays on stderr.")
     args = parser.parse_args(argv)
+    apply_preset_to_args(args, argv if argv is not None else sys.argv[1:])
 
     if args.esrgan_dir:
         set_esrgan_dir(args.esrgan_dir)
     if args.zimage_model:
         set_zimage_model(args.zimage_model)
     set_offload_mode(args.cpu_offload)
+
+    if args.serve:
+        return serve_main(args.host, args.port, args.idle_timeout)
+
     if args.save_paths:
         _save_prefs_keys({"esrgan_dir": ESRGAN_DIR, "zimage_model": BASE_REPO})
         print(f"Saved to {PREFS_PATH}: esrgan_dir={ESRGAN_DIR}, zimage_model={BASE_REPO}")

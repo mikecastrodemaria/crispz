@@ -163,6 +163,26 @@ Prompts for each setting (paths, models, source, pipeline, save, time-log) with 
 default value from `preferences.json`. Offers to save the choices at the end of the
 session.
 
+## Presets (use cases)
+
+A "Use case" dropdown in the UI (and `--preset` on the CLI) fills the settings for a
+given scenario. On the CLI, any explicit flag overrides the preset.
+
+| Preset | What it sets |
+|---|---|
+| `Custom` | Nothing (default). |
+| `Photo (balanced)` | factor 2, denoise 0.30, 12 steps. |
+| `Subtle (clean-up)` | factor 2, denoise 0.12, 16 steps. Stays very close to the input. |
+| `Detailed (creative)` | factor 2, denoise 0.40, 16 steps. More invented detail. |
+| `Portrait (faces)` | factor 2, denoise 0.22, 14 steps. |
+| `4K (tiled)` | factor 4, tile 1024, overlap 64, `--cpu-offload model`. |
+| `Low VRAM (8-12GB)` | ESRGAN tile 512, diffusion tile 1024, `--cpu-offload sequential`. |
+
+```bash
+python app.py --cli -i in.png --preset "4K (tiled)" --save-mode local --output-dir out
+python app.py --cli -i in.png --preset "Detailed (creative)" --denoise 0.32   # flag wins
+```
+
 ## Mapping UI <-> CLI <-> preferences.json
 
 Every UI setting has a CLI flag and a prefs key:
@@ -174,6 +194,7 @@ Every UI setting has a CLI flag and a prefs key:
 | Source image | `-i` (file or glob) | - | - |
 | Batch source folder | `-i` (folder) or `--input-folder` | - | - |
 | ESRGAN model | `-m` / `--model` | `model` | `4x-ClearRealityV1_Soft.safetensors` |
+| Use-case preset | `--preset` | - | `Custom` |
 | Upscale factor | `--factor` | `factor` | `2.0` |
 | Denoise (strength) | `--denoise` | `denoise` | `0.30` |
 | Diffusion steps | `--steps` | `steps` | `12` |
@@ -296,6 +317,39 @@ Measured (RTX 5090, source 832x1216 -> x2 = 1664x2432, denoise 0.30, 12 steps):
 python app.py --cli -i in.png --save-mode local --output-dir out \
     --cpu-offload sequential --report-vram
 ```
+
+---
+
+## Server mode (`--serve`)
+
+For repeated upscales, the per-call model load (Z-Image + Qwen3-4B encoder) dominates
+and makes timings very uneven. `--serve` runs a small HTTP server that loads the model
+**lazily on the first request** and keeps it **warm**, then **frees the VRAM after
+`--idle-timeout` seconds** of inactivity (so it can coexist with another GPU app).
+Requires `fastapi` + `uvicorn`.
+
+```bash
+python app.py --serve --host 127.0.0.1 --port 7861 --idle-timeout 300
+```
+
+Endpoints:
+
+| Method | Path | Body / result |
+|---|---|---|
+| GET | `/health` | `{status, device, pipe_loaded, offload, idle_timeout}` |
+| GET | `/models` | `{esrgan_dir, models:[...]}` |
+| POST | `/upscale` | JSON (`input` path + any setting, incl. `preset`) -> `{output, size, esrgan_s, refine_s, total_s}` |
+| POST | `/unload` | Frees the VRAM now -> `{status:"unloaded"}` |
+
+```bash
+curl -s http://127.0.0.1:7861/upscale -H "Content-Type: application/json" -d '{
+  "input": "in.png", "preset": "4K (tiled)",
+  "save_mode": "local", "output_dir": "out"
+}'
+```
+
+Measured benefit (RTX 5090, 2K): first call ~66s (cold, model load), next call ~46s
+(warm). The model stays resident between calls until the idle timeout fires.
 
 ---
 

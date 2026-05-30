@@ -16,6 +16,10 @@ gradio>=4.44
 pillow
 numpy
 
+# Optionnel: seulement pour le mode serveur persistant (--serve, palier 3).
+fastapi
+uvicorn
+
 # Note xformers: si une version est deja installee mais buildee pour une autre version
 # de torch que la tienne (ex xformers pour torch 2.9 alors que tu as 2.8), diffusers
 # echoue avec "DLL load failed while importing _C" au chargement du VAE. Solution la

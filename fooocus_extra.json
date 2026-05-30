@@ -14,6 +14,18 @@
     "note_isolation": "crispz runs in ITS OWN environment (torch 2.7 / cu128 + diffusers from source). NEVER import it into the Fooocus process."
   },
 
+  "server": {
+    "comment": "Optional persistent mode (stage 3). Keeps the model warm across calls and frees VRAM after idle_timeout. Prefer this when chaining many upscales. Requires fastapi + uvicorn.",
+    "launch": ["{venv_python}", "app.py", "--serve", "--host", "127.0.0.1", "--port", "7861", "--idle-timeout", "300"],
+    "endpoints": {
+      "health": "GET /health",
+      "models": "GET /models",
+      "upscale": "POST /upscale (JSON: input path + any setting incl. preset) -> {output, size, esrgan_s, refine_s, total_s}",
+      "unload": "POST /unload (free VRAM now)"
+    },
+    "measured": "RTX 5090, 2K: first call ~66s (cold, model load), warm calls ~46s. The per-call model load is the main source of uneven CLI timings."
+  },
+
   "env": {
     "python": ">=3.10",
     "venv": true,
@@ -70,6 +82,11 @@
       "key": "model", "label": "ESRGAN model", "type": "dropdown",
       "arg": "-m", "choices_cmd": ["--list-models"],
       "choices_parse": "one file name per line on stdout"
+    },
+    {
+      "key": "preset", "label": "Use case", "type": "dropdown", "arg": "--preset", "default": "Custom",
+      "choices": ["Custom", "Photo (balanced)", "Subtle (clean-up)", "Detailed (creative)", "Portrait (faces)", "4K (tiled)", "Low VRAM (8-12GB)"],
+      "note": "Auto settings for a scenario. Explicit flags override the preset."
     },
     {"key": "factor",  "label": "Factor",  "type": "slider",  "arg": "--factor",  "min": 1.0, "max": 4.0, "step": 0.5,  "default": 2.0},
     {"key": "denoise", "label": "Denoise",  "type": "slider",  "arg": "--denoise", "min": 0.0, "max": 0.8, "step": 0.05, "default": 0.30},
