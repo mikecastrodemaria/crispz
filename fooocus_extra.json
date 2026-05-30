@@ -86,10 +86,12 @@
     "heavy": true,
     "vram_gb_min": 32,
     "vram_measured": {
-      "gpu": "RTX 5090 32 Go",
+      "gpu": "RTX 5090 32 Go (32607 MiB ~= 31.8 Gio)",
       "date": "2026-05-30",
+      "baseline_idle_gb": 1.2,
       "pipeline_2k": {"target": "1664x2432", "denoise": 0.30, "steps": 12, "peak_alloc_gb": 28.48, "peak_reserved_gb": 32.35},
-      "pipeline_4k": "non mesure: le 2K sature deja la carte, OOM attendu en image entiere"
+      "pipeline_4k": "non mesure: le 2K sature deja la carte, OOM attendu en image entiere",
+      "note": "Re-mesure carte au repos (baseline 1.2 Go): memes chiffres -> footprint reel de crispz, pas une contamination. Pic reserve (32.35) > VRAM physique (31.8 Gio) = spill en memoire partagee Windows (WDDM), lent. crispz est donc deja a la limite VRAM seul en 2K."
     },
     "vram_note": "Pipeline complet 2K sature deja une carte 32 Go (pic reserve 32.35 Go). Cohabitation avec Fooocus charge impossible sans offload: decharger imperativement le modele hote avant l'appel. 4K image-entiere non viable sans tiling diffusion ou --cpu-offload (palier 2, a venir cote crispz)."
   }
