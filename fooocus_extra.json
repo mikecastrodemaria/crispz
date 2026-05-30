@@ -1,0 +1,90 @@
+{
+  "manifest_version": 1,
+  "id": "crispz",
+  "name": "Crispz - Z-Image upscaler + detailer",
+  "version": "0.1.0",
+  "description": "Upscale ESRGAN + passe de raffinement Z-Image Turbo (img2img BF16). Process externe, appele en CLI.",
+  "repo": "https://github.com/supersoniquestudio/crispz",
+  "license_note": "Modeles tires a part (HuggingFace pour Z-Image, dossier ESRGAN local).",
+
+  "runtime": {
+    "type": "cli",
+    "requires_gpu": true,
+    "isolation": "process",
+    "note_isolation": "crispz tourne dans SON environnement (torch 2.7 / cu128 + diffusers source). Ne JAMAIS l'importer dans le process Fooocus."
+  },
+
+  "env": {
+    "python": ">=3.10",
+    "venv": true,
+    "comment": "Deux strategies au choix de l'hote. Defaut = fresh_venv. crispz a besoin de torch 2.7 cu128 que Fooocus n'a pas, d'ou l'etape torch explicite.",
+    "strategies": {
+      "fresh_venv": {
+        "description": "Cree un venv neuf et installe torch cu128 puis les deps.",
+        "create": ["python", "-m", "venv", ".venv"],
+        "steps": [
+          {
+            "name": "torch cu128",
+            "cmd": ["{venv_pip}", "install", "torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cu128"],
+            "warn": "Version torch a confirmer contre le build cible (PROJECT_BRIEF: 2.7/cu128)."
+          },
+          {
+            "name": "deps crispz",
+            "cmd": ["{venv_pip}", "install", "-r", "requirements.txt"]
+          }
+        ]
+      },
+      "reuse_python": {
+        "description": "Reutilise un interpreteur qui a deja torch 2.7 cu128 (le py -3.10 systeme de la machine), via --system-site-packages.",
+        "create": ["{base_python}", "-m", "venv", "--system-site-packages", ".venv"],
+        "steps": [
+          {
+            "name": "deps crispz (torch herite)",
+            "cmd": ["{venv_pip}", "install", "-r", "requirements.txt"]
+          }
+        ],
+        "base_python_hint": "Chemin a fournir par l'utilisateur a l'install (ex: py -3.10)."
+      }
+    }
+  },
+
+  "entry": {
+    "command": ["{venv_python}", "app.py", "--cli"],
+    "cwd": "{plugin_dir}",
+    "input_arg": "-i",
+    "output": {
+      "mode": "print_output",
+      "flag": "--print-output",
+      "parse": "Chaque ligne de stdout est un chemin absolu d'image de sortie.",
+      "save_mode_flag": ["--save-mode", "custom"],
+      "save_dir_flag": ["--output-dir", "{output_dir}"],
+      "format_flag": ["--output-format", "png"]
+    },
+    "models_arg": ["--esrgan-dir", "{esrgan_dir}"],
+    "vram_report_flag": "--report-vram",
+    "exit_codes": {"0": "ok", "other": "erreur (voir stderr)"}
+  },
+
+  "params": [
+    {
+      "key": "model", "label": "Modele ESRGAN", "type": "dropdown",
+      "arg": "-m", "choices_cmd": ["--list-models"],
+      "choices_parse": "un nom de fichier par ligne sur stdout"
+    },
+    {"key": "factor",  "label": "Facteur",  "type": "slider",  "arg": "--factor",  "min": 1.0, "max": 4.0, "step": 0.5,  "default": 2.0},
+    {"key": "denoise", "label": "Denoise",  "type": "slider",  "arg": "--denoise", "min": 0.0, "max": 0.8, "step": 0.05, "default": 0.30},
+    {"key": "steps",   "label": "Steps",    "type": "slider",  "arg": "--steps",   "min": 4,   "max": 30,  "step": 1,    "default": 12},
+    {"key": "prompt",  "label": "Prompt",   "type": "text",    "arg": "--prompt",  "default": ""},
+    {"key": "seed",    "label": "Seed",     "type": "number",  "arg": "--seed",    "default": -1, "note": "-1 = aleatoire"},
+    {"key": "tile",    "label": "Tile ESRGAN",  "type": "number", "arg": "--tile",    "default": 760, "note": "0 = desactive"},
+    {"key": "overlap", "label": "Overlap",      "type": "number", "arg": "--overlap", "default": 32}
+  ],
+
+  "host_hints": {
+    "offload_host_model_before_run": true,
+    "reason": "crispz charge ESRGAN + Z-Image BF16. Sur GPU partage, decharger le modele SDXL de Fooocus avant l'appel evite l'OOM.",
+    "heavy": true,
+    "vram_gb_min": null,
+    "vram_note": "A renseigner apres mesure --report-vram (pic reserve sur sortie 4K)."
+  }
+}

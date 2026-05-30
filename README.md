@@ -187,6 +187,8 @@ Chaque reglage de l'UI a un flag CLI et une cle de prefs:
 | Log temps (CLI) | `--time-log <file.tsv>` | `time_log` | (vide) |
 | Sauve les paths (CLI) | `--save-paths` | - | - |
 | Lister modeles (CLI) | `--list-models` | - | - |
+| Pic VRAM sur stderr (CLI) | `--report-vram` | - | - |
+| Chemin de sortie seul (CLI) | `--print-output` | - | - |
 
 Modes de sauvegarde:
 
@@ -238,6 +240,30 @@ ligne TSV:
 ```
 <iso-timestamp>\t<src>\t<dst>\tesrgan=2.24s\trefine=1.87s\tmode=local\tfmt=png
 ```
+
+---
+
+## Integration externe (Fooocus, scripts)
+
+Deux flags facilitent l'appel de crispz depuis un autre outil (process separe):
+
+- `--print-output` : stdout ne contient QUE le chemin absolu de chaque image
+  sauvee (un par ligne), rien d'autre. Le rapport lisible est supprime. C'est
+  le contrat machine-parsable a utiliser pour recuperer le resultat.
+- `--report-vram` : pic VRAM du run sur **stderr** (ligne `[VRAM] pic alloue:
+  X.XX Go | pic reserve: Y.YY Go`). Sur stderr, donc sans polluer le stdout de
+  `--print-output`. Sert a dimensionner la cohabitation VRAM (ex: avec Fooocus).
+
+```bash
+# L'appelant lit le chemin de sortie sur stdout, la VRAM sur stderr
+dst=$(python app.py --cli -i in.png --save-mode local --output-dir out \
+    --print-output --report-vram 2>vram.log)
+echo "image upscalee: $dst"
+```
+
+`--print-output` requiert un mode de sauvegarde qui ecrit un fichier
+(`local` / `alongside` / `custom`). En `display` rien n'est ecrit, donc rien
+n'est imprime.
 
 ---
 

@@ -85,17 +85,6 @@ _PIPE = None
 _LOADED_REPO = None  # repo associe au _PIPE actuel, sert a detecter un changement
 _ESRGAN_CACHE = {}
 
-# Palier 0 (brief plugin Fooocus): mesure du pic VRAM. Active par --report-vram.
-# Mesure l'allocateur PyTorch uniquement (ni spandrel, ni contexte CUDA), a
-# recouper avec nvidia-smi. Voir PLAN_evolution.md.
-REPORT_VRAM = False
-
-
-def _report_peak_vram():
-    if REPORT_VRAM and DEVICE == "cuda":
-        peak = torch.cuda.max_memory_allocated() / 1024**3
-        print(f"[VRAM] pic alloue: {peak:.1f} Go", file=sys.stderr)
-
 
 def set_esrgan_dir(path):
     """Change le dossier ESRGAN. Invalide le cache (les noms peuvent collisionner entre dossiers)."""
@@ -227,10 +216,6 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
     image = image.convert("RGB")
     w0, h0 = image.size
 
-    # Palier 0: isole le pic VRAM de cette image (utile en batch)
-    if REPORT_VRAM and DEVICE == "cuda":
-        torch.cuda.reset_peak_memory_stats()
-
     # Etage 1 : ESRGAN
     t0 = time.time()
     model = load_esrgan(esrgan_model)
@@ -242,7 +227,6 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
 
     if denoise <= 0.001:
         timings["refine"] = 0.0
-        _report_peak_vram()
         return upscaled, timings
 
     # Etage 2 : Z-Image img2img
@@ -259,7 +243,6 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
     ).images[0]
     timings["refine"] = time.time() - t0
 
-    _report_peak_vram()
     gc.collect()
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
@@ -357,11 +340,13 @@ def _report_vram():
 
 def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed,
         tile, overlap, save_mode=DEFAULT_SAVE_MODE, output_dir=DEFAULT_OUTPUT_DIR,
-        output_format=DEFAULT_OUTPUT_FORMAT, time_log_path=None):
+        output_format=DEFAULT_OUTPUT_FORMAT, time_log_path=None, print_output=False):
     """Point d'entree commun UI / CLI.
     Renvoie (last_result_PIL, last_source_PIL, report_markdown).
     - Si source_folder est un dossier existant -> batch sur ses images.
     - Sinon, image est utilisee (PIL ou chemin str).
+    - print_output: imprime le chemin absolu de chaque image sauvee sur stdout
+      (contrat machine-parsable pour l'integration externe).
     """
     if not esrgan_model:
         raise gr.Error(f"Aucun modele ESRGAN trouve dans {ESRGAN_DIR}.")
@@ -382,6 +367,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
                 dst = build_output_path(p, save_mode, output_dir, output_format)
                 if dst:
                     save_image(result, dst, output_format)
+                    if print_output:
+                        print(os.path.abspath(dst))
                 _append_time_log(time_log_path, p, dst, t, save_mode, output_format)
                 lines.append(f"- `{os.path.basename(p)}` {result.size[0]}x{result.size[1]} "
                              f"esrgan {t['esrgan']:.1f}s + refine {t['refine']:.1f}s"
@@ -414,6 +401,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
         save_warning = ""
     if dst:
         save_image(result, dst, output_format)
+        if print_output:
+            print(os.path.abspath(dst))
     _append_time_log(time_log_path, source_path, dst, t, save_mode, output_format)
     report = _format_timings(t, src_path=source_path, dst_path=dst) + save_warning
     return result, src_img.convert("RGB"), report
@@ -634,10 +623,11 @@ def cli_main(argv=None):
     parser.add_argument("--report-vram", action="store_true",
                         help="Affiche le pic VRAM du run sur stderr (ligne '[VRAM] ...'). "
                              "Sert a dimensionner la cohabitation avec Fooocus.")
+    parser.add_argument("--print-output", action="store_true",
+                        help="N'imprime QUE le chemin absolu de sortie sur stdout (un par "
+                             "image sauvee), rien d'autre. Pour integration externe (Fooocus). "
+                             "Implique stdout silencieux; le pic VRAM reste sur stderr.")
     args = parser.parse_args(argv)
-
-    global REPORT_VRAM
-    REPORT_VRAM = args.report_vram
 
     if args.esrgan_dir:
         set_esrgan_dir(args.esrgan_dir)
@@ -691,6 +681,10 @@ def cli_main(argv=None):
             explicit_output_file = args.output
             save_mode = "custom"
 
+    # --print-output: stdout reserve aux chemins de sortie (contrat machine).
+    # Le pic VRAM, lui, reste sur stderr et n'est donc pas pollue.
+    quiet = args.quiet or args.print_output
+
     # Mode batch dossier
     if source_folder:
         last_result, last_source, report = run(
@@ -698,8 +692,9 @@ def cli_main(argv=None):
             args.prompt, args.seed, args.tile, args.overlap,
             save_mode=save_mode, output_dir=output_dir,
             output_format=args.output_format, time_log_path=args.time_log,
+            print_output=args.print_output,
         )
-        if not args.quiet:
+        if not quiet:
             print(report)
         if args.report_vram:
             _report_vram()
@@ -713,7 +708,7 @@ def cli_main(argv=None):
 
     # Si plusieurs fichiers via glob, on les passe un par un
     for p in paths:
-        if not args.quiet:
+        if not quiet:
             print(f"-> {p}")
         img = Image.open(p)
         # explicit_output_file ne s'applique qu'au premier fichier
@@ -722,8 +717,10 @@ def cli_main(argv=None):
                                     args.prompt, args.seed, args.tile, args.overlap)
             os.makedirs(os.path.dirname(os.path.abspath(explicit_output_file)) or ".", exist_ok=True)
             save_image(result, explicit_output_file, args.output_format)
+            if args.print_output:
+                print(os.path.abspath(explicit_output_file))
             _append_time_log(args.time_log, p, explicit_output_file, t, "custom", args.output_format)
-            if not args.quiet:
+            if not quiet:
                 print(_format_timings(t, src_path=p, dst_path=explicit_output_file))
         else:
             # mode standard: build_output_path applique le save_mode
@@ -732,8 +729,9 @@ def cli_main(argv=None):
                 args.prompt, args.seed, args.tile, args.overlap,
                 save_mode=save_mode, output_dir=output_dir,
                 output_format=args.output_format, time_log_path=args.time_log,
+                print_output=args.print_output,
             )
-            if not args.quiet:
+            if not quiet:
                 print(report)
     if args.report_vram:
         _report_vram()
