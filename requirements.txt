@@ -1,0 +1,27 @@
+# NE PAS reinstaller torch : garder ton build PyTorch 2.7 / CUDA 12.8 existant.
+# Z-Image n'est dans diffusers que depuis la source, d'ou le git+ ci-dessous.
+
+git+https://github.com/huggingface/diffusers
+
+# transformers >= 4.49 requis pour Dinov2WithRegistersConfig (utilise par ZImage).
+transformers>=4.49
+accelerate
+sentencepiece
+spandrel
+
+# Comparateur avant/apres = composant HTML+JS interne (voir _make_compare_html dans app.py).
+# Pas de dep externe -> stack stable.
+gradio>=4.44
+
+pillow
+numpy
+
+# Note xformers: si une version est deja installee mais buildee pour une autre version
+# de torch que la tienne (ex xformers pour torch 2.9 alors que tu as 2.8), diffusers
+# echoue avec "DLL load failed while importing _C" au chargement du VAE. Solution la
+# plus simple: pip uninstall xformers. Torch 2.7+ a SDPA natif qui suffit.
+
+# Note xformers: si une version est deja installee mais buildee pour une autre version
+# de torch que la tienne (ex xformers pour torch 2.9 alors que tu as 2.8), diffusers
+# echoue avec "DLL load failed while importing _C" au chargement du VAE. Solution la
+# plus simple: pip uninstall xformers. Torch 2.7+ a SDPA natif qui suffit.
