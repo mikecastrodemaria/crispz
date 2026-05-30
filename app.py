@@ -146,7 +146,7 @@ def load_esrgan(model_name):
     path = os.path.join(ESRGAN_DIR, model_name)
     model = ModelLoader().load_from_file(path)
     if not isinstance(model, ImageModelDescriptor):
-        raise ValueError(f"{model_name} n'est pas un modele image SR exploitable.")
+        raise ValueError(f"{model_name} is not a usable image SR model.")
     model = model.to(DEVICE).eval()
     _ESRGAN_CACHE[model_name] = model
     return model
@@ -303,7 +303,7 @@ def build_output_path(source_path, save_mode, output_dir, output_format):
 
     if save_mode == "alongside":
         if not source_path:
-            raise ValueError("save_mode=alongside necessite un chemin source (CLI ou dossier batch).")
+            raise ValueError("save_mode=alongside requires a source path (CLI or batch folder).")
         return os.path.join(os.path.dirname(os.path.abspath(source_path)), fname)
 
     if save_mode == "custom":
@@ -343,7 +343,7 @@ def _format_timings(t, src_path=None, dst_path=None):
         parts.append(f"Source: `{src_path}`")
     parts.append(f"ESRGAN: **{t.get('esrgan', 0.0):.1f}s**  |  Z-Image refine: **{t.get('refine', 0.0):.1f}s**  |  Total: **{total:.1f}s**")
     if dst_path:
-        parts.append(f"Sauve: `{dst_path}`")
+        parts.append(f"Saved: `{dst_path}`")
     return "  \n".join(parts)
 
 
@@ -381,15 +381,15 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
       (contrat machine-parsable pour l'integration externe).
     """
     if not esrgan_model:
-        raise gr.Error(f"Aucun modele ESRGAN trouve dans {ESRGAN_DIR}.")
+        raise gr.Error(f"No ESRGAN model found in {ESRGAN_DIR}.")
 
     # Mode batch
     if source_folder and os.path.isdir(source_folder):
         paths = _list_folder_images(source_folder)
         if not paths:
-            raise gr.Error(f"Aucune image dans {source_folder}")
+            raise gr.Error(f"No image in {source_folder}")
         last_result = last_source = None
-        lines = [f"### Batch: {len(paths)} image(s) depuis `{source_folder}`"]
+        lines = [f"### Batch: {len(paths)} image(s) from `{source_folder}`"]
         t_batch = time.time()
         for p in paths:
             try:
@@ -407,13 +407,13 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
                              + (f" -> `{dst}`" if dst else " (display)"))
                 last_result, last_source = result, src.convert("RGB")
             except Exception as e:
-                lines.append(f"- `{os.path.basename(p)}` ECHEC: {e}")
+                lines.append(f"- `{os.path.basename(p)}` FAILED: {e}")
         lines.append(f"**Batch total: {time.time()-t_batch:.1f}s**")
         return last_result, last_source, "  \n".join(lines)
 
     # Mode image unique
     if image is None:
-        raise gr.Error("Charge une image (ou indique un dossier source pour le mode batch).")
+        raise gr.Error("Load an image (or specify a source folder for batch mode).")
     if isinstance(image, str):
         source_path = image
         src_img = Image.open(source_path)
@@ -428,7 +428,7 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
         dst = build_output_path(source_path, save_mode, output_dir, output_format)
     except ValueError as e:
         dst = None
-        save_warning = f"  \n[AVERT] {e}"
+        save_warning = f"  \n[WARN] {e}"
     else:
         save_warning = ""
     if dst:
@@ -462,19 +462,19 @@ def _refresh_models(new_dir):
     set_esrgan_dir(new_dir)
     models = list_esrgan_models()
     value = models[0] if models else None
-    return gr.update(choices=models, value=value), f"{len(models)} modele(s) trouve(s) dans {ESRGAN_DIR}"
+    return gr.update(choices=models, value=value), f"{len(models)} model(s) found in {ESRGAN_DIR}"
 
 
 def _apply_zimage(repo):
     set_zimage_model(repo)
-    return f"Z-Image: {BASE_REPO} (sera (re)charge au prochain run)"
+    return f"Z-Image: {BASE_REPO} (will be (re)loaded on next run)"
 
 
 def _save_paths_to_prefs(esrgan_dir, zimage_model):
     set_esrgan_dir(esrgan_dir)
     set_zimage_model(zimage_model)
     _save_prefs_keys({"esrgan_dir": ESRGAN_DIR, "zimage_model": BASE_REPO})
-    return f"Sauve dans {PREFS_PATH}: esrgan_dir={ESRGAN_DIR}, zimage_model={BASE_REPO}"
+    return f"Saved to {PREFS_PATH}: esrgan_dir={ESRGAN_DIR}, zimage_model={BASE_REPO}"
 
 
 def _pil_to_b64_jpeg(img, max_side=1600, quality=85):
@@ -499,7 +499,7 @@ def _pil_to_b64_jpeg(img, max_side=1600, quality=85):
 def _make_compare_html(src_img, result_img):
     """Comparateur avant/apres standalone: 2 <img> superposees, slider range pilote un clip-path."""
     if src_img is None or result_img is None:
-        return "<div style='padding:1em;color:#888'>Aucun resultat a comparer.</div>"
+        return "<div style='padding:1em;color:#888'>No result to compare.</div>"
     src_b64 = _pil_to_b64_jpeg(src_img)
     res_b64 = _pil_to_b64_jpeg(result_img)
     uid = uuid.uuid4().hex[:8]
@@ -520,9 +520,9 @@ def _make_compare_html(src_img, result_img):
          "
          style="position:absolute; bottom:10px; left:5%; width:90%; height:14px; cursor:ew-resize;" />
   <div style="position:absolute; top:8px; left:8px; padding:2px 8px; background:rgba(0,0,0,0.6); color:#fff;
-              font-size:12px; border-radius:4px; pointer-events:none;">AVANT</div>
+              font-size:12px; border-radius:4px; pointer-events:none;">BEFORE</div>
   <div style="position:absolute; top:8px; right:8px; padding:2px 8px; background:rgba(0,0,0,0.6); color:#fff;
-              font-size:12px; border-radius:4px; pointer-events:none;">APRES</div>
+              font-size:12px; border-radius:4px; pointer-events:none;">AFTER</div>
 </div>
 """
 
@@ -545,62 +545,62 @@ def build_ui():
     default_model = DEFAULT_MODEL if DEFAULT_MODEL in models else (models[0] if models else None)
 
     with gr.Blocks(title="crispz - Z-Image upscaler + detailer") as demo:
-        gr.Markdown("## crispz\nReal-ESRGAN puis raffinement Z-Image Turbo, 100% local.")
+        gr.Markdown("## crispz\nReal-ESRGAN then Z-Image Turbo refinement, 100% local.")
 
-        with gr.Accordion("Chemins / modeles (configuration)", open=False):
-            esrgan_dir_tb = gr.Textbox(value=ESRGAN_DIR, label="ESRGAN_DIR (dossier .pth / .safetensors)")
-            zimage_model_tb = gr.Textbox(value=BASE_REPO, label="Z-Image (repo HF ou chemin local)")
+        with gr.Accordion("Paths / models (configuration)", open=False):
+            esrgan_dir_tb = gr.Textbox(value=ESRGAN_DIR, label="ESRGAN_DIR (.pth / .safetensors folder)")
+            zimage_model_tb = gr.Textbox(value=BASE_REPO, label="Z-Image (HF repo or local path)")
             with gr.Row():
-                refresh_btn = gr.Button("Rafraichir la liste ESRGAN", size="sm")
-                apply_zimage_btn = gr.Button("Appliquer Z-Image", size="sm")
-                save_paths_btn = gr.Button("Sauver dans preferences.json", size="sm", variant="primary")
+                refresh_btn = gr.Button("Refresh ESRGAN list", size="sm")
+                apply_zimage_btn = gr.Button("Apply Z-Image", size="sm")
+                save_paths_btn = gr.Button("Save to preferences.json", size="sm", variant="primary")
             paths_status = gr.Markdown("")
 
         with gr.Row():
             with gr.Column():
-                inp = gr.Image(type="pil", label="Image source (mode unique)")
+                inp = gr.Image(type="pil", label="Source image (single mode)")
                 source_folder_tb = gr.Textbox(
                     value="",
-                    label="OU dossier source (mode batch, prioritaire si rempli)",
-                    placeholder="ex: D:/images/serie_a",
+                    label="OR source folder (batch mode, takes priority if filled)",
+                    placeholder="e.g. D:/images/series_a",
                 )
-                esrgan = gr.Dropdown(models, value=default_model, label="Modele ESRGAN")
-                factor = gr.Slider(1.0, 4.0, value=DEFAULT_FACTOR, step=0.5, label="Facteur d'agrandissement net")
+                esrgan = gr.Dropdown(models, value=default_model, label="ESRGAN model")
+                factor = gr.Slider(1.0, 4.0, value=DEFAULT_FACTOR, step=0.5, label="Net upscale factor")
                 denoise = gr.Slider(0.0, 0.8, value=DEFAULT_DENOISE, step=0.01,
-                                    label="Denoise (strength) - 0.2-0.4 conseille")
-                steps = gr.Slider(4, 30, value=DEFAULT_STEPS, step=1, label="Steps (passe diffusion)")
-                prompt = gr.Textbox(label="Prompt optionnel", placeholder="laisser vide marche tres bien")
-                seed = gr.Number(value=-1, label="Seed (-1 = aleatoire)", precision=0)
-                with gr.Accordion("Tiling ESRGAN (VRAM)", open=False):
-                    tile = gr.Slider(0, 1024, value=DEFAULT_TILE, step=8, label="Taille de tuile (0 = desactive)")
+                                    label="Denoise (strength) - 0.2-0.4 recommended")
+                steps = gr.Slider(4, 30, value=DEFAULT_STEPS, step=1, label="Steps (diffusion pass)")
+                prompt = gr.Textbox(label="Optional prompt", placeholder="leaving it empty works very well")
+                seed = gr.Number(value=-1, label="Seed (-1 = random)", precision=0)
+                with gr.Accordion("ESRGAN tiling (VRAM)", open=False):
+                    tile = gr.Slider(0, 1024, value=DEFAULT_TILE, step=8, label="Tile size (0 = disabled)")
                     overlap = gr.Slider(0, 128, value=DEFAULT_OVERLAP, step=8, label="Overlap")
                     offload = gr.Dropdown(
                         choices=list(OFFLOAD_CHOICES),
                         value="none",
-                        label="CPU offload (passe diffusion)",
-                        info="none=tout en VRAM | model=decharge par sous-module (bon compromis) | "
-                             "sequential=plus agressif, plus lent. Fait baisser le pic VRAM.",
+                        label="CPU offload (diffusion pass)",
+                        info="none=all in VRAM | model=offload per submodule (good tradeoff) | "
+                             "sequential=more aggressive, slower. Lowers the VRAM peak.",
                     )
-                with gr.Accordion("Sauvegarde", open=True):
+                with gr.Accordion("Save", open=True):
                     save_mode = gr.Radio(
                         choices=["display", "local", "alongside", "custom"],
                         value=DEFAULT_SAVE_MODE,
-                        label="Mode de sauvegarde",
-                        info="display=ne sauve rien | local=dans 'output_dir' relatif au projet | "
-                             "alongside=meme dossier que la source (CLI/batch) | custom=output_dir tel quel",
+                        label="Save mode",
+                        info="display=save nothing | local=into 'output_dir' relative to the project | "
+                             "alongside=same folder as the source (CLI/batch) | custom=output_dir as-is",
                     )
-                    output_dir = gr.Textbox(value=DEFAULT_OUTPUT_DIR, label="Dossier de sortie (local/custom)")
+                    output_dir = gr.Textbox(value=DEFAULT_OUTPUT_DIR, label="Output folder (local/custom)")
                     output_format = gr.Dropdown(
                         choices=list(SUPPORTED_FORMATS),
                         value=DEFAULT_OUTPUT_FORMAT,
-                        label="Format de sortie",
+                        label="Output format",
                     )
                 btn = gr.Button("Upscale + Detail", variant="primary")
             with gr.Column():
-                out_slider = gr.HTML(value="<div style='padding:1em;color:#888'>Aucun resultat. Lance un upscale.</div>",
-                                     label="Comparateur avant / apres (glisse le slider)")
-                out = gr.Image(type="pil", label="Resultat (telechargeable)")
-                report = gr.Markdown(value="*Aucun run pour l'instant.*", label="Rapport")
+                out_slider = gr.HTML(value="<div style='padding:1em;color:#888'>No result yet. Run an upscale.</div>",
+                                     label="Before / after comparator (drag the slider)")
+                out = gr.Image(type="pil", label="Result (downloadable)")
+                report = gr.Markdown(value="*No run yet.*", label="Report")
 
         refresh_btn.click(_refresh_models, [esrgan_dir_tb], [esrgan, paths_status])
         apply_zimage_btn.click(_apply_zimage, [zimage_model_tb], [paths_status])
@@ -621,56 +621,56 @@ def cli_main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="crispz CLI. Sans arguments: lance l'UI Gradio.",
+        description="crispz CLI. With no arguments: launches the Gradio UI.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--cli", action="store_true", help="Forcer le mode CLI (sinon: lance l'UI)")
+    parser.add_argument("--cli", action="store_true", help="Force CLI mode (otherwise: launches the UI)")
     # Sources : fichier, glob, dossier
-    parser.add_argument("-i", "--input", help="Image, glob (in/*.png) ou DOSSIER source pour batch")
-    parser.add_argument("--input-folder", help="Alias explicite pour dossier batch (sinon -i fait l'affaire)")
+    parser.add_argument("-i", "--input", help="Image, glob (in/*.png) or source FOLDER for batch")
+    parser.add_argument("--input-folder", help="Explicit alias for the batch folder (otherwise -i works too)")
     # Sortie
     parser.add_argument("-o", "--output",
-                        help="Fichier de sortie (mode single, override le naming auto). "
-                             "Si dossier: equivaut a --save-mode local --output-dir <ce dossier>.")
+                        help="Output file (single mode, overrides auto naming). "
+                             "If a folder: equivalent to --save-mode local --output-dir <that folder>.")
     parser.add_argument("--save-mode", choices=["display", "local", "alongside", "custom"],
                         default=DEFAULT_SAVE_MODE,
-                        help="display=pas de save | local=output_dir relatif projet | "
-                             "alongside=meme dossier que la source | custom=output_dir tel quel")
+                        help="display=no save | local=output_dir relative to project | "
+                             "alongside=same folder as the source | custom=output_dir as-is")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR,
-                        help="Dossier de sortie pour --save-mode local/custom")
+                        help="Output folder for --save-mode local/custom")
     parser.add_argument("--output-format", choices=list(SUPPORTED_FORMATS),
-                        default=DEFAULT_OUTPUT_FORMAT, help="Format de sortie (png/webp/jpg)")
+                        default=DEFAULT_OUTPUT_FORMAT, help="Output format (png/webp/jpg)")
     # Pipeline
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL,
-                        help="Modele ESRGAN (fichier dans ESRGAN_DIR). Fallback: premier trouve.")
-    parser.add_argument("--factor", type=float, default=DEFAULT_FACTOR, help="Facteur d'agrandissement net")
-    parser.add_argument("--denoise", type=float, default=DEFAULT_DENOISE, help="Strength Z-Image (0 = ESRGAN seul)")
-    parser.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="Steps diffusion")
-    parser.add_argument("--prompt", default="", help="Prompt optionnel")
-    parser.add_argument("--seed", type=int, default=-1, help="Seed (-1 = aleatoire)")
-    parser.add_argument("--tile", type=int, default=DEFAULT_TILE, help="Taille tuile ESRGAN (0 = desactive)")
-    parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP, help="Overlap tiling ESRGAN")
+                        help="ESRGAN model (file in ESRGAN_DIR). Fallback: first found.")
+    parser.add_argument("--factor", type=float, default=DEFAULT_FACTOR, help="Net upscale factor")
+    parser.add_argument("--denoise", type=float, default=DEFAULT_DENOISE, help="Z-Image strength (0 = ESRGAN only)")
+    parser.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="Diffusion steps")
+    parser.add_argument("--prompt", default="", help="Optional prompt")
+    parser.add_argument("--seed", type=int, default=-1, help="Seed (-1 = random)")
+    parser.add_argument("--tile", type=int, default=DEFAULT_TILE, help="ESRGAN tile size (0 = disabled)")
+    parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP, help="ESRGAN tiling overlap")
     parser.add_argument("--cpu-offload", choices=list(OFFLOAD_CHOICES), default="none",
-                        help="Offload CPU de la passe diffusion (VRAM). none=tout en VRAM | "
-                             "model=decharge par sous-module (bon compromis) | "
-                             "sequential=plus agressif, plus lent. Requiert accelerate.")
+                        help="CPU offload of the diffusion pass (VRAM). none=all in VRAM | "
+                             "model=offload per submodule (good tradeoff) | "
+                             "sequential=more aggressive, slower. Requires accelerate.")
     # Chemins config / Z-Image
-    parser.add_argument("--esrgan-dir", help="Override ESRGAN_DIR pour ce run")
-    parser.add_argument("--zimage-model", help="Override repo HF / chemin local Z-Image")
+    parser.add_argument("--esrgan-dir", help="Override ESRGAN_DIR for this run")
+    parser.add_argument("--zimage-model", help="Override HF repo / local path for Z-Image")
     parser.add_argument("--save-paths", action="store_true",
-                        help="Sauve --esrgan-dir et --zimage-model dans preferences.json")
+                        help="Save --esrgan-dir and --zimage-model to preferences.json")
     # Reports
-    parser.add_argument("--list-models", action="store_true", help="Liste les modeles ESRGAN puis sort")
+    parser.add_argument("--list-models", action="store_true", help="List ESRGAN models then exit")
     parser.add_argument("--time-log", default=None,
-                        help="Si fourni, append le temps de chaque run a ce fichier (TSV)")
-    parser.add_argument("--quiet", action="store_true", help="Reduit la verbosite stdout")
+                        help="If set, append the time of each run to this file (TSV)")
+    parser.add_argument("--quiet", action="store_true", help="Reduce stdout verbosity")
     parser.add_argument("--report-vram", action="store_true",
-                        help="Affiche le pic VRAM du run sur stderr (ligne '[VRAM] ...'). "
-                             "Sert a dimensionner la cohabitation avec Fooocus.")
+                        help="Print the run VRAM peak on stderr (line '[VRAM] ...'). "
+                             "Used to size coexistence with Fooocus.")
     parser.add_argument("--print-output", action="store_true",
-                        help="N'imprime QUE le chemin absolu de sortie sur stdout (un par "
-                             "image sauvee), rien d'autre. Pour integration externe (Fooocus). "
-                             "Implique stdout silencieux; le pic VRAM reste sur stderr.")
+                        help="Print ONLY the absolute output path on stdout (one per saved "
+                             "image), nothing else. For external integration (Fooocus). "
+                             "Implies a silent stdout; the VRAM peak stays on stderr.")
     args = parser.parse_args(argv)
 
     if args.esrgan_dir:
@@ -680,7 +680,7 @@ def cli_main(argv=None):
     set_offload_mode(args.cpu_offload)
     if args.save_paths:
         _save_prefs_keys({"esrgan_dir": ESRGAN_DIR, "zimage_model": BASE_REPO})
-        print(f"Sauve dans {PREFS_PATH}: esrgan_dir={ESRGAN_DIR}, zimage_model={BASE_REPO}")
+        print(f"Saved to {PREFS_PATH}: esrgan_dir={ESRGAN_DIR}, zimage_model={BASE_REPO}")
         if not args.input and not args.input_folder:
             return 0
 
@@ -689,7 +689,7 @@ def cli_main(argv=None):
 
     if args.list_models:
         if not models:
-            print(f"Aucun modele dans {ESRGAN_DIR}")
+            print(f"No model in {ESRGAN_DIR}")
         else:
             for m in models:
                 print(m)
@@ -701,7 +701,7 @@ def cli_main(argv=None):
         return 0
 
     if not models:
-        parser.error(f"Aucun modele ESRGAN dans {ESRGAN_DIR}")
+        parser.error(f"No ESRGAN model in {ESRGAN_DIR}")
 
     model_name = args.model if args.model in models else models[0]
 
@@ -749,7 +749,7 @@ def cli_main(argv=None):
     paths = sorted(glob.glob(args.input)) if any(c in args.input for c in "*?[") else [args.input]
     paths = [p for p in paths if os.path.isfile(p)]
     if not paths:
-        parser.error(f"Aucun fichier ne correspond a {args.input}")
+        parser.error(f"No file matches {args.input}")
 
     # Si plusieurs fichiers via glob, on les passe un par un
     for p in paths:
