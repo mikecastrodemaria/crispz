@@ -115,6 +115,15 @@ _ESRGAN_CACHE = {}
 OFFLOAD_MODE = "none"
 OFFLOAD_CHOICES = ("none", "model", "sequential")
 
+# Logs d'etape sur stderr (chargement modeles, etages, tuiles). Coupes par --quiet.
+# stderr donc ne pollue pas le stdout de --print-output.
+VERBOSE = True
+
+
+def _log(msg):
+    if VERBOSE:
+        print(f"[crispz] {msg}", file=sys.stderr, flush=True)
+
 
 def set_esrgan_dir(path):
     """Change le dossier ESRGAN. Invalide le cache (les noms peuvent collisionner entre dossiers)."""
@@ -132,6 +141,7 @@ def set_zimage_model(repo_or_path):
         if _LOADED_REPO is not None and _LOADED_REPO != BASE_REPO:
             _PIPE = None
             _LOADED_REPO = None
+            _log(f"pipeline invalidated (Z-Image model changed) -> will reload")
 
 
 def set_offload_mode(mode):
@@ -147,6 +157,7 @@ def set_offload_mode(mode):
             gc.collect()
             if DEVICE == "cuda":
                 torch.cuda.empty_cache()
+            _log(f"pipeline invalidated (offload -> {OFFLOAD_MODE}) -> will reload")
 
 
 def free_vram():
@@ -188,6 +199,7 @@ def load_esrgan(model_name):
     if model_name in _ESRGAN_CACHE:
         return _ESRGAN_CACHE[model_name]
     from spandrel import ModelLoader, ImageModelDescriptor
+    _log(f"loading ESRGAN model: {model_name} ...")
     path = os.path.join(ESRGAN_DIR, model_name)
     model = ModelLoader().load_from_file(path)
     if not isinstance(model, ImageModelDescriptor):
@@ -258,7 +270,11 @@ def esrgan_upscale(img, model, tile, overlap):
 def load_pipe():
     global _PIPE, _LOADED_REPO, _LOADED_OFFLOAD
     if _PIPE is not None and _LOADED_REPO == BASE_REPO and _LOADED_OFFLOAD == OFFLOAD_MODE:
+        _log("Z-Image pipeline: reusing cached (no reload)")
         return _PIPE
+    _log(f"loading Z-Image pipeline: {BASE_REPO} (offload={OFFLOAD_MODE}, dtype=bf16) ... "
+         "first time downloads from HF, then cached")
+    _t = time.time()
     from diffusers import ZImageImg2ImgPipeline
     pipe = ZImageImg2ImgPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE)
     try:
@@ -277,6 +293,7 @@ def load_pipe():
     _PIPE = pipe
     _LOADED_REPO = BASE_REPO
     _LOADED_OFFLOAD = OFFLOAD_MODE
+    _log(f"Z-Image pipeline ready in {time.time() - _t:.1f}s")
     return pipe
 
 
@@ -330,11 +347,18 @@ def _refine_tiled(pipe, image, denoise, steps, prompt, seed, tile, overlap):
     acc = np.zeros((h, w, 3), dtype=np.float32)
     weight = np.zeros((h, w, 1), dtype=np.float32)
     step = max(16, tile - overlap)
-    for y in range(0, h, step):
-        for x in range(0, w, step):
+    ys = list(range(0, h, step))
+    xs = list(range(0, w, step))
+    total = len(ys) * len(xs)
+    _log(f"refine: tiled {w}x{h}, tile {tile} overlap {overlap} -> {len(xs)}x{len(ys)} = {total} tiles")
+    i = 0
+    for y in ys:
+        for x in xs:
+            i += 1
             x2, y2 = min(x + tile, w), min(y + tile, h)
             x1, y1 = max(x2 - tile, 0), max(y2 - tile, 0)
             cw, ch = x2 - x1, y2 - y1
+            _log(f"  tile {i}/{total}")
             crop = image.crop((x1, y1, x2, y2))
             out = _refine_whole(pipe, crop, denoise, steps, prompt, seed)
             if out.size != (cw, ch):
@@ -362,14 +386,17 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
     # Etage 1 : ESRGAN
     t0 = time.time()
     model = load_esrgan(esrgan_model)
+    _log(f"stage 1/2 ESRGAN upscale: {w0}x{h0} (tile {int(tile)}) ...")
     upscaled = esrgan_upscale(image, model, int(tile), int(overlap))
     target_w = round_to_multiple(w0 * factor)
     target_h = round_to_multiple(h0 * factor)
     upscaled = upscaled.resize((target_w, target_h), Image.LANCZOS)
     timings["esrgan"] = time.time() - t0
+    _log(f"stage 1/2 done in {timings['esrgan']:.1f}s -> {target_w}x{target_h}")
 
     if denoise <= 0.001:
         timings["refine"] = 0.0
+        _log("stage 2/2 skipped (denoise = 0, ESRGAN only)")
         return upscaled, timings
 
     # Etage 2 : Z-Image img2img (image entiere, ou tuiles si refine_tile > 0)
@@ -379,12 +406,16 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
         refined = _refine_tiled(pipe, upscaled, denoise, steps, prompt, seed,
                                 int(refine_tile), int(refine_overlap))
     else:
+        _log(f"stage 2/2 Z-Image refine: whole image {target_w}x{target_h}, "
+             f"denoise {float(denoise):.2f}, {int(steps)} steps ...")
         refined = _refine_whole(pipe, upscaled, denoise, steps, prompt, seed)
     timings["refine"] = time.time() - t0
 
     gc.collect()
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
+    _log(f"stage 2/2 done in {timings['refine']:.1f}s | total "
+         f"{timings['esrgan'] + timings['refine']:.1f}s")
     return refined, timings
 
 
@@ -932,6 +963,9 @@ def cli_main(argv=None):
                              "Implies a silent stdout; the VRAM peak stays on stderr.")
     args = parser.parse_args(argv)
     apply_preset_to_args(args, argv if argv is not None else sys.argv[1:])
+
+    global VERBOSE
+    VERBOSE = not args.quiet
 
     if args.esrgan_dir:
         set_esrgan_dir(args.esrgan_dir)

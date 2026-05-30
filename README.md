@@ -257,6 +257,12 @@ Full `preferences.json` example:
 - `refine` : stage 2 (Z-Image img2img). 0s if `denoise <= 0`.
 - `total`  : sum
 
+crispz also prints `[crispz] ...` stage logs to **stderr** (loading ESRGAN, loading
+or reusing the Z-Image pipeline, stage timings, per-tile progress). This fills the
+otherwise-silent model-load gaps and tells you whether a run reloaded the pipeline or
+reused the cached one. Silenced with `--quiet`; on stderr, so it never pollutes
+`--print-output`.
+
 The UI shows a Markdown block under the image. The CLI prints the report on
 stdout (unless `--quiet`). With `--time-log <file>`, each run appends a TSV line:
 
