@@ -42,6 +42,9 @@ out/
 output/
 *.tsv
 
+# --- Images de test locales (essais, non versionnees) ---
+tests/
+
 # --- OS / editeurs ---
 .DS_Store
 Thumbs.db
