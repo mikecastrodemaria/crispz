@@ -40,14 +40,38 @@ cli.bat
 ```
 
 The install scripts:
-- check that Python and PyTorch are present (without touching torch),
+- find a base Python that already has PyTorch (never touch torch),
+- by default create a **`.venv` virtual environment with
+  `--system-site-packages`**: it **inherits your system torch/CUDA** (no torch
+  reinstall) while **isolating crispz's own deps** (diffusers, gradio, spandrel)
+  from your global Python,
 - automatically uninstall a broken `xformers` (built for the wrong torch
   version -> DLL load error when diffusers loads),
 - install the other deps from `requirements.txt`,
 - verify that `ZImageImg2ImgPipeline` loads,
 - create the `upscale_models/` folder.
 
-Equivalent manual install:
+`run.sh` / `cli.sh` (and the `.bat`) automatically use `.venv` if it exists.
+
+### venv or not: the `--no-venv` flag
+
+The venv is the default (keeps your global Python clean). To install/run directly
+on the current interpreter instead (the old behavior), pass `--no-venv` (or
+`--system`) to any script:
+
+```bash
+./install.sh --no-venv      # install on the current Python
+./run.sh --no-venv          # run on the current Python
+```
+
+```bat
+install.bat --no-venv
+run.bat --no-venv
+```
+
+If venv creation fails, the scripts fall back to the current Python automatically.
+
+Equivalent manual install (no venv):
 
 ```bash
 pip install -r requirements.txt

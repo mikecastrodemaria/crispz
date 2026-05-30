@@ -1,10 +1,20 @@
 @echo off
-REM Lance crispz avec detection hardware + reco d'optimisation.
+REM Lance crispz (UI Gradio) avec detection hardware.
+REM Utilise .venv s'il existe; --no-venv (ou --system) force le Python courant.
 
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-REM 1) Python
+set USE_VENV=1
+:argloop
+if "%~1"=="" goto argdone
+if /I "%~1"=="--no-venv" set USE_VENV=0
+if /I "%~1"=="--system" set USE_VENV=0
+shift
+goto argloop
+:argdone
+
+REM Python de base
 where py >nul 2>&1
 if errorlevel 1 (
     set PYCMD=python
@@ -13,7 +23,10 @@ if errorlevel 1 (
     if errorlevel 1 ( set PYCMD=py ) else ( set PYCMD=py -3.10 )
 )
 
-REM 2) ESRGAN_DIR: priorite a la variable existante, sinon dossier sdlibs s'il existe, sinon local
+set RUNPY=!PYCMD!
+if "!USE_VENV!"=="1" if exist ".venv\Scripts\python.exe" set RUNPY=.venv\Scripts\python.exe
+
+REM ESRGAN_DIR: priorite a la variable existante, sinon dossier sdlibs s'il existe, sinon local
 if "%ESRGAN_DIR%"=="" (
     if exist "D:\Github\sdlibs\models\ESRGAN" (
         set ESRGAN_DIR=D:\Github\sdlibs\models\ESRGAN
@@ -23,14 +36,15 @@ if "%ESRGAN_DIR%"=="" (
 )
 
 echo === crispz - run ===
-echo ESRGAN_DIR = %ESRGAN_DIR%
+echo Python     = !RUNPY!
+echo ESRGAN_DIR = !ESRGAN_DIR!
 echo.
 echo --- Detection hardware ---
-%PYCMD% _hw_check.py
+!RUNPY! _hw_check.py
 echo.
 
 echo --- Lancement de l'UI Gradio ---
 echo Ouvre http://127.0.0.1:7860 dans ton navigateur
 echo.
-%PYCMD% app.py
+!RUNPY! app.py
 endlocal
