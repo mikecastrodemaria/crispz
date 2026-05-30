@@ -182,6 +182,8 @@ Every UI setting has a CLI flag and a prefs key:
 | ESRGAN tile | `--tile` | `tile` | `760` |
 | Overlap | `--overlap` | `overlap` | `32` |
 | CPU offload (diffusion) | `--cpu-offload` | - | `none` |
+| Diffusion tile (4K+) | `--refine-tile` | - | `0` (whole image) |
+| Diffusion tile overlap | `--refine-overlap` | - | `64` |
 | Save mode | `--save-mode` | `save_mode` | `display` |
 | Output folder | `--output-dir` | `output_dir` | `out` |
 | Output format | `--output-format` | `output_format` | `png` |
@@ -328,13 +330,29 @@ python app.py --cli -i my_image.jpg -o out/my_image_upscaled.png \
 
 ---
 
-## Known limitation / next iteration
+## High resolution (4K+): diffusion tiling
 
-The Z-Image pass runs on the whole image. Ideal up to ~2048px on the long side;
-beyond that you exceed the training resolution and artifacts can appear.
+By default the Z-Image pass runs on the whole image. That is ideal up to ~2048px on
+the long side; beyond that you exceed the training resolution (artifacts) and the
+VRAM peak explodes.
 
-Planned next: tiling of the diffusion pass, Ultimate SD Upscale style, with
-feathering, to push to 4K+ without seams.
+`--refine-tile <px>` (0 = off) tiles the diffusion pass, Ultimate SD Upscale style:
+each tile is refined separately and recomposed with linear feathering over
+`--refine-overlap` (so seams are invisible). This both **caps the VRAM peak** (one
+tile at a time, independent of the final size) and **enables 4K+**. Try a tile of
+1024-1280 (rounded to a multiple of 16) with overlap 64.
+
+```bash
+# 4K refine, tiled, seam-free
+python app.py --cli -i in.png --factor 4 --denoise 0.30 --steps 12 \
+    --refine-tile 1024 --refine-overlap 64 \
+    --save-mode local --output-dir out
+```
+
+Measured (RTX 5090, base 832x1216 -> x4 = 3328x4864, tile 1024, denoise 0.30):
+EXIT in ~86s, VRAM peak ~21.7 / 23.0 GB (vs OOM for whole-image 4K). Combine with
+`--cpu-offload` for an even lower peak. Whole-image mode (`--refine-tile 0`) stays
+the default and the best choice under ~2048px (no regression).
 
 ---
 

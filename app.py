@@ -35,6 +35,10 @@ DEFAULT_DENOISE = 0.30
 DEFAULT_STEPS = 12
 DEFAULT_TILE = 760
 DEFAULT_OVERLAP = 32
+# Tiling de la passe diffusion Z-Image (4K+). 0 = image entiere (defaut, pas de
+# regression). >0 = decoupe en tuiles de cette taille (arrondie a un multiple de 16).
+DEFAULT_REFINE_TILE = 0
+DEFAULT_REFINE_OVERLAP = 64
 DEFAULT_SAVE_MODE = "display"        # display | local | alongside | custom
 DEFAULT_OUTPUT_DIR = "out"
 DEFAULT_OUTPUT_FORMAT = "png"        # png | webp | jpg
@@ -239,10 +243,76 @@ def round_to_multiple(x, m=16):
     return max(m, int(round(x / m) * m))
 
 
+def _make_generator(seed):
+    return torch.Generator(DEVICE).manual_seed(int(seed)) if int(seed) >= 0 else None
+
+
+def _refine_whole(pipe, image, denoise, steps, prompt, seed):
+    """Passe Z-Image img2img sur l'image entiere."""
+    return pipe(
+        prompt=prompt or "",
+        image=image,
+        strength=float(denoise),
+        num_inference_steps=int(steps),
+        guidance_scale=0.0,
+        generator=_make_generator(seed),
+    ).images[0]
+
+
+def _feather_mask_np(th, tw, overlap, left, right, top, bottom):
+    """Masque (th, tw, 1) a rampe lineaire sur les bords qui jouxtent une autre tuile."""
+    mask = np.ones((th, tw, 1), dtype=np.float32)
+    f = int(overlap)
+    if f > 0:
+        ramp = np.linspace(0.0, 1.0, f, dtype=np.float32)
+        if left:
+            mask[:, :f, 0] *= ramp[np.newaxis, :]
+        if right:
+            mask[:, tw - f:, 0] *= ramp[::-1][np.newaxis, :]
+        if top:
+            mask[:f, :, 0] *= ramp[:, np.newaxis]
+        if bottom:
+            mask[th - f:, :, 0] *= ramp[::-1][:, np.newaxis]
+    return mask
+
+
+def _refine_tiled(pipe, image, denoise, steps, prompt, seed, tile, overlap):
+    """Passe Z-Image en tuiles avec recomposition feather (facon Ultimate SD Upscale).
+    Plafonne le pic VRAM (une tuile a la fois) et permet le 4K+ sans coutures.
+    Memes rampe lineaire + overlap-add que esrgan_upscale, mais a scale 1 sur PIL."""
+    w, h = image.size
+    tile = round_to_multiple(tile)                       # multiple de 16 pour le VAE
+    overlap = max(0, min(int(overlap), tile - 16))
+    if w <= tile and h <= tile:
+        return _refine_whole(pipe, image, denoise, steps, prompt, seed)
+
+    acc = np.zeros((h, w, 3), dtype=np.float32)
+    weight = np.zeros((h, w, 1), dtype=np.float32)
+    step = max(16, tile - overlap)
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            x2, y2 = min(x + tile, w), min(y + tile, h)
+            x1, y1 = max(x2 - tile, 0), max(y2 - tile, 0)
+            cw, ch = x2 - x1, y2 - y1
+            crop = image.crop((x1, y1, x2, y2))
+            out = _refine_whole(pipe, crop, denoise, steps, prompt, seed)
+            if out.size != (cw, ch):
+                out = out.resize((cw, ch), Image.LANCZOS)
+            out_arr = np.asarray(out.convert("RGB"), dtype=np.float32) / 255.0
+            mask = _feather_mask_np(ch, cw, overlap,
+                                    left=x1 > 0, right=x2 < w, top=y1 > 0, bottom=y2 < h)
+            acc[y1:y2, x1:x2, :] += out_arr * mask
+            weight[y1:y2, x1:x2, :] += mask
+
+    out = acc / np.clip(weight, 1e-6, None)
+    return Image.fromarray((out * 255.0 + 0.5).astype(np.uint8))
+
+
 # ----------------------------------------------------------------------------
 # Orchestration : process_one, save, batch, run (UI/CLI commun)
 # ----------------------------------------------------------------------------
-def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile, overlap):
+def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile, overlap,
+                refine_tile=DEFAULT_REFINE_TILE, refine_overlap=DEFAULT_REFINE_OVERLAP):
     """Pipeline complet sur une PIL Image, renvoie (refined_image, timings_dict)."""
     timings = {}
     image = image.convert("RGB")
@@ -261,18 +331,14 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
         timings["refine"] = 0.0
         return upscaled, timings
 
-    # Etage 2 : Z-Image img2img
+    # Etage 2 : Z-Image img2img (image entiere, ou tuiles si refine_tile > 0)
     t0 = time.time()
     pipe = load_pipe()
-    generator = torch.Generator(DEVICE).manual_seed(int(seed)) if int(seed) >= 0 else None
-    refined = pipe(
-        prompt=prompt or "",
-        image=upscaled,
-        strength=float(denoise),
-        num_inference_steps=int(steps),
-        guidance_scale=0.0,
-        generator=generator,
-    ).images[0]
+    if int(refine_tile) > 0:
+        refined = _refine_tiled(pipe, upscaled, denoise, steps, prompt, seed,
+                                int(refine_tile), int(refine_overlap))
+    else:
+        refined = _refine_whole(pipe, upscaled, denoise, steps, prompt, seed)
     timings["refine"] = time.time() - t0
 
     gc.collect()
@@ -372,13 +438,15 @@ def _report_vram():
 
 def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed,
         tile, overlap, save_mode=DEFAULT_SAVE_MODE, output_dir=DEFAULT_OUTPUT_DIR,
-        output_format=DEFAULT_OUTPUT_FORMAT, time_log_path=None, print_output=False):
+        output_format=DEFAULT_OUTPUT_FORMAT, time_log_path=None, print_output=False,
+        refine_tile=DEFAULT_REFINE_TILE, refine_overlap=DEFAULT_REFINE_OVERLAP):
     """Point d'entree commun UI / CLI.
     Renvoie (last_result_PIL, last_source_PIL, report_markdown).
     - Si source_folder est un dossier existant -> batch sur ses images.
     - Sinon, image est utilisee (PIL ou chemin str).
     - print_output: imprime le chemin absolu de chaque image sauvee sur stdout
       (contrat machine-parsable pour l'integration externe).
+    - refine_tile > 0: passe Z-Image en tuiles (4K+, plafonne le pic VRAM).
     """
     if not esrgan_model:
         raise gr.Error(f"No ESRGAN model found in {ESRGAN_DIR}.")
@@ -395,7 +463,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
             try:
                 src = Image.open(p)
                 result, t = process_one(src, esrgan_model, factor, denoise, steps,
-                                        prompt, seed, tile, overlap)
+                                        prompt, seed, tile, overlap,
+                                        refine_tile=refine_tile, refine_overlap=refine_overlap)
                 dst = build_output_path(p, save_mode, output_dir, output_format)
                 if dst:
                     save_image(result, dst, output_format)
@@ -422,7 +491,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
         src_img = image
 
     result, t = process_one(src_img, esrgan_model, factor, denoise, steps,
-                            prompt, seed, tile, overlap)
+                            prompt, seed, tile, overlap,
+                            refine_tile=refine_tile, refine_overlap=refine_overlap)
     dst = None
     try:
         dst = build_output_path(source_path, save_mode, output_dir, output_format)
@@ -528,13 +598,14 @@ def _make_compare_html(src_img, result_img):
 
 
 def _ui_run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed,
-            tile, overlap, offload_mode, save_mode, output_dir, output_format):
+            tile, overlap, offload_mode, refine_tile, refine_overlap,
+            save_mode, output_dir, output_format):
     """Adaptateur UI: appelle run() et renvoie (result_image, html_slider, report_markdown)."""
     set_offload_mode(offload_mode)
     last_result, last_source, report = run(
         image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed,
         tile, overlap, save_mode=save_mode, output_dir=output_dir,
-        output_format=output_format,
+        output_format=output_format, refine_tile=refine_tile, refine_overlap=refine_overlap,
     )
     html = _make_compare_html(last_source, last_result)
     return last_result, html, report
@@ -581,6 +652,14 @@ def build_ui():
                         info="none=all in VRAM | model=offload per submodule (good tradeoff) | "
                              "sequential=more aggressive, slower. Lowers the VRAM peak.",
                     )
+                with gr.Accordion("Z-Image tiling (4K+)", open=False):
+                    refine_tile = gr.Slider(0, 2048, value=DEFAULT_REFINE_TILE, step=16,
+                                            label="Diffusion tile size (0 = whole image)",
+                                            info="Tiles the Z-Image pass. Caps the VRAM peak and "
+                                                 "enables 4K+ without seams. Try 1024-1280. "
+                                                 "Whole image stays best under ~2048px.")
+                    refine_overlap = gr.Slider(0, 256, value=DEFAULT_REFINE_OVERLAP, step=16,
+                                               label="Diffusion tile overlap (feather)")
                 with gr.Accordion("Save", open=True):
                     save_mode = gr.Radio(
                         choices=["display", "local", "alongside", "custom"],
@@ -608,7 +687,8 @@ def build_ui():
         btn.click(
             _ui_run,
             inputs=[inp, source_folder_tb, esrgan, factor, denoise, steps, prompt, seed,
-                    tile, overlap, offload, save_mode, output_dir, output_format],
+                    tile, overlap, offload, refine_tile, refine_overlap,
+                    save_mode, output_dir, output_format],
             outputs=[out, out_slider, report],
         )
     return demo
@@ -650,6 +730,11 @@ def cli_main(argv=None):
     parser.add_argument("--seed", type=int, default=-1, help="Seed (-1 = random)")
     parser.add_argument("--tile", type=int, default=DEFAULT_TILE, help="ESRGAN tile size (0 = disabled)")
     parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP, help="ESRGAN tiling overlap")
+    parser.add_argument("--refine-tile", type=int, default=DEFAULT_REFINE_TILE,
+                        help="Z-Image diffusion tile size (0 = whole image). >0 tiles the "
+                             "refine pass: caps VRAM and enables 4K+ without seams. Try 1024-1280.")
+    parser.add_argument("--refine-overlap", type=int, default=DEFAULT_REFINE_OVERLAP,
+                        help="Overlap (feather) of the Z-Image diffusion tiles")
     parser.add_argument("--cpu-offload", choices=list(OFFLOAD_CHOICES), default="none",
                         help="CPU offload of the diffusion pass (VRAM). none=all in VRAM | "
                              "model=offload per submodule (good tradeoff) | "
@@ -738,6 +823,7 @@ def cli_main(argv=None):
             save_mode=save_mode, output_dir=output_dir,
             output_format=args.output_format, time_log_path=args.time_log,
             print_output=args.print_output,
+            refine_tile=args.refine_tile, refine_overlap=args.refine_overlap,
         )
         if not quiet:
             print(report)
@@ -759,7 +845,8 @@ def cli_main(argv=None):
         # explicit_output_file ne s'applique qu'au premier fichier
         if explicit_output_file and len(paths) == 1:
             result, t = process_one(img, model_name, args.factor, args.denoise, args.steps,
-                                    args.prompt, args.seed, args.tile, args.overlap)
+                                    args.prompt, args.seed, args.tile, args.overlap,
+                                    refine_tile=args.refine_tile, refine_overlap=args.refine_overlap)
             os.makedirs(os.path.dirname(os.path.abspath(explicit_output_file)) or ".", exist_ok=True)
             save_image(result, explicit_output_file, args.output_format)
             if args.print_output:
@@ -775,6 +862,7 @@ def cli_main(argv=None):
                 save_mode=save_mode, output_dir=output_dir,
                 output_format=args.output_format, time_log_path=args.time_log,
                 print_output=args.print_output,
+                refine_tile=args.refine_tile, refine_overlap=args.refine_overlap,
             )
             if not quiet:
                 print(report)
