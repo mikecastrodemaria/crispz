@@ -83,7 +83,15 @@ DTYPE = torch.bfloat16
 # Caches process-wide pour ne pas recharger a chaque run
 _PIPE = None
 _LOADED_REPO = None  # repo associe au _PIPE actuel, sert a detecter un changement
+_LOADED_OFFLOAD = None  # mode offload du _PIPE actuel, sert a detecter un changement
 _ESRGAN_CACHE = {}
+
+# Palier 2 (cohabitation VRAM, brief plugin Fooocus): offload CPU de la passe
+# diffusion. none = tout en VRAM (defaut). model = decharge par sous-module
+# (bon compromis). sequential = plus agressif, plus lent. N'est PAS de la quantif:
+# les poids restent BF16, ils transitent juste RAM <-> GPU. Requiert accelerate.
+OFFLOAD_MODE = "none"
+OFFLOAD_CHOICES = ("none", "model", "sequential")
 
 
 def set_esrgan_dir(path):
@@ -102,6 +110,21 @@ def set_zimage_model(repo_or_path):
         if _LOADED_REPO is not None and _LOADED_REPO != BASE_REPO:
             _PIPE = None
             _LOADED_REPO = None
+
+
+def set_offload_mode(mode):
+    """Change le mode d'offload CPU de la passe diffusion. Invalide le pipe si
+    change (les hooks d'offload sont poses au chargement) et libere la VRAM."""
+    global OFFLOAD_MODE, _PIPE, _LOADED_OFFLOAD
+    mode = mode if mode in OFFLOAD_CHOICES else "none"
+    if mode != OFFLOAD_MODE:
+        OFFLOAD_MODE = mode
+        if _LOADED_OFFLOAD is not None and _LOADED_OFFLOAD != OFFLOAD_MODE:
+            _PIPE = None
+            _LOADED_OFFLOAD = None
+            gc.collect()
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
 
 
 # ----------------------------------------------------------------------------
@@ -188,18 +211,27 @@ def esrgan_upscale(img, model, tile, overlap):
 # Etage 2 : Z-Image img2img (diffusers, BF16)
 # ----------------------------------------------------------------------------
 def load_pipe():
-    global _PIPE, _LOADED_REPO
-    if _PIPE is not None and _LOADED_REPO == BASE_REPO:
+    global _PIPE, _LOADED_REPO, _LOADED_OFFLOAD
+    if _PIPE is not None and _LOADED_REPO == BASE_REPO and _LOADED_OFFLOAD == OFFLOAD_MODE:
         return _PIPE
     from diffusers import ZImageImg2ImgPipeline
     pipe = ZImageImg2ImgPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE)
-    pipe = pipe.to(DEVICE)
     try:
         pipe.enable_attention_slicing()
     except Exception:
         pass
+    # Offload CPU (palier 2): enable_*_cpu_offload gere lui-meme le placement
+    # device, donc NE PAS faire .to(cuda) dans ce cas. Hors CUDA, l'offload n'a
+    # pas de sens: on charge simplement sur le device courant.
+    if DEVICE == "cuda" and OFFLOAD_MODE == "model":
+        pipe.enable_model_cpu_offload()
+    elif DEVICE == "cuda" and OFFLOAD_MODE == "sequential":
+        pipe.enable_sequential_cpu_offload()
+    else:
+        pipe = pipe.to(DEVICE)
     _PIPE = pipe
     _LOADED_REPO = BASE_REPO
+    _LOADED_OFFLOAD = OFFLOAD_MODE
     return pipe
 
 
@@ -496,8 +528,9 @@ def _make_compare_html(src_img, result_img):
 
 
 def _ui_run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed,
-            tile, overlap, save_mode, output_dir, output_format):
+            tile, overlap, offload_mode, save_mode, output_dir, output_format):
     """Adaptateur UI: appelle run() et renvoie (result_image, html_slider, report_markdown)."""
+    set_offload_mode(offload_mode)
     last_result, last_source, report = run(
         image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed,
         tile, overlap, save_mode=save_mode, output_dir=output_dir,
@@ -541,6 +574,13 @@ def build_ui():
                 with gr.Accordion("Tiling ESRGAN (VRAM)", open=False):
                     tile = gr.Slider(0, 1024, value=DEFAULT_TILE, step=8, label="Taille de tuile (0 = desactive)")
                     overlap = gr.Slider(0, 128, value=DEFAULT_OVERLAP, step=8, label="Overlap")
+                    offload = gr.Dropdown(
+                        choices=list(OFFLOAD_CHOICES),
+                        value="none",
+                        label="CPU offload (passe diffusion)",
+                        info="none=tout en VRAM | model=decharge par sous-module (bon compromis) | "
+                             "sequential=plus agressif, plus lent. Fait baisser le pic VRAM.",
+                    )
                 with gr.Accordion("Sauvegarde", open=True):
                     save_mode = gr.Radio(
                         choices=["display", "local", "alongside", "custom"],
@@ -568,7 +608,7 @@ def build_ui():
         btn.click(
             _ui_run,
             inputs=[inp, source_folder_tb, esrgan, factor, denoise, steps, prompt, seed,
-                    tile, overlap, save_mode, output_dir, output_format],
+                    tile, overlap, offload, save_mode, output_dir, output_format],
             outputs=[out, out_slider, report],
         )
     return demo
@@ -610,6 +650,10 @@ def cli_main(argv=None):
     parser.add_argument("--seed", type=int, default=-1, help="Seed (-1 = aleatoire)")
     parser.add_argument("--tile", type=int, default=DEFAULT_TILE, help="Taille tuile ESRGAN (0 = desactive)")
     parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP, help="Overlap tiling ESRGAN")
+    parser.add_argument("--cpu-offload", choices=list(OFFLOAD_CHOICES), default="none",
+                        help="Offload CPU de la passe diffusion (VRAM). none=tout en VRAM | "
+                             "model=decharge par sous-module (bon compromis) | "
+                             "sequential=plus agressif, plus lent. Requiert accelerate.")
     # Chemins config / Z-Image
     parser.add_argument("--esrgan-dir", help="Override ESRGAN_DIR pour ce run")
     parser.add_argument("--zimage-model", help="Override repo HF / chemin local Z-Image")
@@ -633,6 +677,7 @@ def cli_main(argv=None):
         set_esrgan_dir(args.esrgan_dir)
     if args.zimage_model:
         set_zimage_model(args.zimage_model)
+    set_offload_mode(args.cpu_offload)
     if args.save_paths:
         _save_prefs_keys({"esrgan_dir": ESRGAN_DIR, "zimage_model": BASE_REPO})
         print(f"Sauve dans {PREFS_PATH}: esrgan_dir={ESRGAN_DIR}, zimage_model={BASE_REPO}")

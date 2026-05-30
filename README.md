@@ -181,6 +181,7 @@ Every UI setting has a CLI flag and a prefs key:
 | Seed | `--seed` | `seed` | `-1` |
 | ESRGAN tile | `--tile` | `tile` | `760` |
 | Overlap | `--overlap` | `overlap` | `32` |
+| CPU offload (diffusion) | `--cpu-offload` | - | `none` |
 | Save mode | `--save-mode` | `save_mode` | `display` |
 | Output folder | `--output-dir` | `output_dir` | `out` |
 | Output format | `--output-format` | `output_format` | `png` |
@@ -263,6 +264,36 @@ echo "upscaled image: $dst"
 `--print-output` requires a save mode that writes a file
 (`local` / `alongside` / `custom`). In `display` nothing is written, so nothing
 is printed.
+
+---
+
+## VRAM offload (`--cpu-offload`)
+
+The Z-Image refinement pass is the heavy VRAM consumer. By default it runs fully
+on the GPU. To shrink the peak (so crispz can coexist with another GPU app, e.g. a
+loaded Fooocus), `--cpu-offload` streams the diffusion weights between RAM and GPU.
+This is NOT quantization: weights stay BF16, they just move RAM <-> GPU. Requires
+`accelerate` (already in `requirements.txt`). Available in the UI too (Tiling/VRAM
+accordion) and on the CLI.
+
+| Mode | What it does |
+|---|---|
+| `none` (default) | Everything in VRAM. Fastest, highest peak. |
+| `model` | Offload per submodule. Good tradeoff: ~half the peak, similar speed. |
+| `sequential` | Most aggressive, lowest peak, a bit slower. |
+
+Measured (RTX 5090, source 832x1216 -> x2 = 1664x2432, denoise 0.30, 12 steps):
+
+| Mode | Peak allocated | Peak reserved | Time |
+|---|---|---|---|
+| `none` | 28.48 GB | 32.35 GB (spills to shared RAM) | ~59s |
+| `model` | 13.54 GB | 24.02 GB | ~52s |
+| `sequential` | 9.20 GB | 9.22 GB | ~61s |
+
+```bash
+python app.py --cli -i in.png --save-mode local --output-dir out \
+    --cpu-offload sequential --report-vram
+```
 
 ---
 

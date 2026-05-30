@@ -77,7 +77,12 @@
     {"key": "prompt",  "label": "Prompt",   "type": "text",    "arg": "--prompt",  "default": ""},
     {"key": "seed",    "label": "Seed",     "type": "number",  "arg": "--seed",    "default": -1, "note": "-1 = random"},
     {"key": "tile",    "label": "ESRGAN tile",  "type": "number", "arg": "--tile",    "default": 760, "note": "0 = disabled"},
-    {"key": "overlap", "label": "Overlap",      "type": "number", "arg": "--overlap", "default": 32}
+    {"key": "overlap", "label": "Overlap",      "type": "number", "arg": "--overlap", "default": 32},
+    {
+      "key": "cpu_offload", "label": "CPU offload (diffusion VRAM)", "type": "dropdown",
+      "arg": "--cpu-offload", "choices": ["none", "model", "sequential"], "default": "none",
+      "note": "Lowers the diffusion VRAM peak. 'sequential' (~9 GB) lets crispz coexist with a loaded host model."
+    }
   ],
 
   "host_hints": {
@@ -90,9 +95,11 @@
       "date": "2026-05-30",
       "baseline_idle_gb": 1.2,
       "pipeline_2k": {"target": "1664x2432", "denoise": 0.30, "steps": 12, "peak_alloc_gb": 28.48, "peak_reserved_gb": 32.35},
-      "pipeline_4k": "not measured: 2K already saturates the card, OOM expected in whole-image mode",
-      "note": "Re-measured on an idle card (1.2 GB baseline): same numbers -> crispz's real footprint, not contamination. Reserved peak (32.35) > physical VRAM (31.8 GiB) = spill into Windows shared memory (WDDM), slow. So crispz is already at the VRAM limit alone at 2K."
+      "pipeline_2k_offload_model": {"peak_alloc_gb": 13.54, "peak_reserved_gb": 24.02, "time_s": 52},
+      "pipeline_2k_offload_sequential": {"peak_alloc_gb": 9.20, "peak_reserved_gb": 9.22, "time_s": 61},
+      "pipeline_4k": "not measured: 2K saturates the card without offload, OOM expected in whole-image mode",
+      "note": "Re-measured on an idle card (1.2 GB baseline): same numbers -> crispz's real footprint, not contamination. Without offload the reserved peak (32.35) > physical VRAM (31.8 GiB) = spill into Windows shared memory (WDDM), slow."
     },
-    "vram_note": "Full pipeline at 2K already saturates a 32 GB card (reserved peak 32.35 GB). Coexisting with a loaded Fooocus is impossible without offload: the host model MUST be offloaded before the call. 4K whole-image is not viable without diffusion tiling or --cpu-offload (stage 2, upcoming on the crispz side)."
+    "vram_note": "Without offload, the 2K pipeline saturates a 32 GB card. --cpu-offload (implemented) fixes this: 'model' ~24 GB reserved, 'sequential' ~9 GB reserved with little speed loss. Recommended integration: pass --cpu-offload sequential so crispz coexists with a loaded host model; offloading the host model before the call remains the safest belt-and-suspenders option. 4K whole-image still needs diffusion tiling (roadmap)."
   }
 }
