@@ -351,6 +351,19 @@ python app.py --cli -i in.png --save-mode local --output-dir out \
     --cpu-offload sequential --report-vram
 ```
 
+**Recommended (32 GB card):**
+
+- **2K output (<= ~2048 px):** `--cpu-offload model`. Fits in ~24 GB and is the
+  fastest. `none` needs 32.35 GB and spills into Windows shared memory on a 32 GB
+  card, which is slower.
+- **4K+:** add `--refine-tile 1024` (diffusion tiling) on top of `--cpu-offload
+  model` (or `sequential`). Whole-image at 4K OOMs.
+- **Sharing the GPU with another app:** `--cpu-offload sequential` (~9 GB).
+
+In the Fooocus Extra plugin the host SDXL model is unloaded before each call, so
+crispz gets almost the whole card. `model` is still the best 2K pick because `none`
+sits right at the 32 GB limit and spills.
+
 ---
 
 ## Server mode (`--serve`)

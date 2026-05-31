@@ -3,8 +3,11 @@
 
 git+https://github.com/huggingface/diffusers
 
-# transformers >= 4.49 requis pour Dinov2WithRegistersConfig (utilise par ZImage).
-transformers>=4.49
+# transformers >= 4.51 requis : Z-Image Turbo utilise un encodeur Qwen3 (Qwen3Model),
+# absent avant 4.51 (echec "module transformers has no attribute Qwen3Model").
+# Borne <5 : la ligne 5.x a des changements d'API qui peuvent casser le diffusers
+# source. Rester sur 4.51+ (teste OK en 4.57).
+transformers>=4.51,<5
 accelerate
 sentencepiece
 spandrel

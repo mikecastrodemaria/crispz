@@ -36,9 +36,14 @@
         "create": ["python", "-m", "venv", ".venv"],
         "steps": [
           {
+            "name": "pip upgrade",
+            "cmd": ["{venv_python}", "-m", "pip", "install", "--upgrade", "pip"],
+            "warn": "Required: the fresh venv ships an old pip that rejects typing_extensions from the PyTorch index (name normalization bug -> ResolutionImpossible)."
+          },
+          {
             "name": "torch cu128",
-            "cmd": ["{venv_pip}", "install", "torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cu128"],
-            "warn": "Confirm the torch version against the target build (2.7/cu128)."
+            "cmd": ["{venv_pip}", "install", "torch==2.7.1", "torchvision", "--index-url", "https://download.pytorch.org/whl/cu128"],
+            "warn": "torch 2.7.1 cu128 = reference build (PROJECT_BRIEF)."
           },
           {
             "name": "crispz deps",
