@@ -88,6 +88,9 @@ pip install -r requirements.txt
   The requirements pin this lower bound.
 - **diffusers from git.** Z-Image is only in diffusers from source (not in the
   releases at the time of writing), hence the `git+...` in requirements.
+- **Gradio pinned `<6`.** Gradio 6's Brotli middleware has an h11 bug that spams
+  `Too little data for declared Content-Length` in the console when a response is
+  interrupted (non-fatal, but noisy). Requirements pin `gradio<6` to avoid it.
 
 ---
 
