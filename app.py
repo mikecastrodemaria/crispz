@@ -277,6 +277,15 @@ def load_pipe():
     _t = time.time()
     from diffusers import ZImageImg2ImgPipeline
     pipe = ZImageImg2ImgPipeline.from_pretrained(BASE_REPO, torch_dtype=DTYPE)
+    # Le VAE Z-Image a force_upcast=True -> encode/decode en float32. Sur Blackwell
+    # (RTX 50xx: pas de tensor cores fp32) le VAE img2img devient ~50x plus lent (et
+    # peut faire deborder la VRAM). On le garde en bf16 + tiling (comme ComfyUI).
+    try:
+        pipe.vae.config.force_upcast = False
+        pipe.enable_vae_slicing()
+        pipe.enable_vae_tiling()
+    except Exception:
+        pass
     try:
         pipe.enable_attention_slicing()
     except Exception:
