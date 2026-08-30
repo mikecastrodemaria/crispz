@@ -39,6 +39,43 @@ DEFAULT_OVERLAP = 32
 # regression). >0 = decoupe en tuiles de cette taille (arrondie a un multiple de 16).
 DEFAULT_REFINE_TILE = 0
 DEFAULT_REFINE_OVERLAP = 64
+
+# Garde-fou 4K: au-dela de ce cote (px), un refine "whole image" (refine_tile = Auto) est
+# auto-tuile. Un whole-image 4K active le slicing (lent) et risque le spill VRAM; tuiler
+# est plus rapide ET plus sur.
+AUTO_REFINE_TILE_ABOVE = 1664
+# Taille de la tuile de cet auto-tuilage. "auto" = choisie par _pick_refine_tile pour
+# MINIMISER la surface tuilee (n tuiles x tuile^2), qui est le vrai cout de la passe.
+# Mesure (RTX 5090, sortie 4096x4096, denoise 0.40, overlap 64): le cout par pixel est
+# PLAT de 768 a 1024 (1.78 / 1.83 / 1.79 us/px) et ne grimpe qu'au-dela (2.41 a 1536,
+# 3.00 a 2048) -> le temps suit la surface couverte, pas la taille de la tuile. Or a 1024
+# la grille deborde: pas de 960 sur 4096 -> la derniere tuile est rabattue et recouvre la
+# precedente sur 832px au lieu de 64, soit 1.56x la surface de l'image. A 896 le pas tombe
+# juste (1.20x) -> 36.7s au lieu de 46.9s, a nombre de tuiles (25) et de coutures (8)
+# IDENTIQUE. Mettre un entier ici fige la taille (ex. 1024 = comportement d'avant).
+AUTO_REFINE_TILE = "auto"
+AUTO_REFINE_TILE_MIN = 768      # en dessous: plus de coutures, moins de contexte par tuile
+AUTO_REFINE_TILE_MAX = 1024     # au-dessus: l'attention devient superlineaire
+
+# Prompt utilise pour le refine TUILE. Le prompt global decrit TOUTE la composition (pas
+# la tuile) -> le passer a chaque tuile pousse la diffusion a recreer le sujet dans des
+# tuiles qui ne sont que du fond (duplications). Par defaut on passe donc un prompt VIDE:
+# chaque tuile se contente d'affiner le detail local.
+#   "" (defaut) = prompt vide par tuile
+#   "global" / "scene" = reutilise le prompt de la scene
+#   tout autre texte = prompt generique par tuile (ex. "high detail, sharp")
+REFINE_TILE_PROMPT = ""
+# Plafond de denoise pour le refine TUILE (filet a fort denoise). 0 = pas de plafond.
+# Le refine whole-image garde le denoise demande: une seule passe, aucune duplication.
+REFINE_TILE_DENOISE_CAP = 0.40
+
+# Choix du menu "Diffusion tile size". 0 = Auto (image entiere sous
+# AUTO_REFINE_TILE_ABOVE, puis tuilage a la taille calculee).
+REFINE_TILE_CHOICES = [("Auto", 0)] + [(str(t), t) for t in
+                                       (512, 640, 768, 896, 1024, 1280, 1536, 2048)]
+if DEFAULT_REFINE_TILE not in [v for _, v in REFINE_TILE_CHOICES]:
+    REFINE_TILE_CHOICES.append((str(DEFAULT_REFINE_TILE), DEFAULT_REFINE_TILE))
+    REFINE_TILE_CHOICES.sort(key=lambda c: c[1])
 DEFAULT_SAVE_MODE = "display"        # display | local | alongside | custom
 DEFAULT_OUTPUT_DIR = "out"
 DEFAULT_OUTPUT_FORMAT = "png"        # png | webp | jpg
@@ -310,6 +347,35 @@ def round_to_multiple(x, m=16):
     return max(m, int(round(x / m) * m))
 
 
+def _pick_refine_tile(w, h, overlap):
+    """Tuile qui minimise la surface tuilee pour couvrir w x h (= le cout reel de la passe).
+
+    A surface egale on garde la PLUS GRANDE tuile: moins de coutures et plus de contexte
+    par tuile. Un entier dans AUTO_REFINE_TILE court-circuite le calcul (taille figee)."""
+    if str(AUTO_REFINE_TILE).strip().lower() not in ("auto", "", "0"):
+        try:
+            return round_to_multiple(int(AUTO_REFINE_TILE), 32)
+        except (TypeError, ValueError):
+            _log(f"AUTO_REFINE_TILE={AUTO_REFINE_TILE!r} invalide (attendu 'auto' ou un "
+                 "entier) -> calcul automatique")
+    lo = max(256, AUTO_REFINE_TILE_MIN)
+    hi = max(lo, AUTO_REFINE_TILE_MAX)
+    ov = max(0, int(overlap))
+    cands = []
+    for t in range(lo, hi + 1, 32):
+        step = max(16, t - ov)
+        n = len(range(0, max(1, int(w)), step)) * len(range(0, max(1, int(h)), step))
+        cands.append((n * t * t, -t, t))       # surface mini, puis plus grande tuile
+    return min(cands)[2]
+
+
+def _tile_prompt(scene_prompt):
+    """Prompt a utiliser par tuile (vide par defaut, anti-duplication)."""
+    if str(REFINE_TILE_PROMPT).strip().lower() in ("global", "scene"):
+        return scene_prompt or ""
+    return REFINE_TILE_PROMPT
+
+
 def _make_generator(seed):
     return torch.Generator(DEVICE).manual_seed(int(seed)) if int(seed) >= 0 else None
 
@@ -351,7 +417,20 @@ def _refine_tiled(pipe, image, denoise, steps, prompt, seed, tile, overlap):
     tile = round_to_multiple(tile)                       # multiple de 16 pour le VAE
     overlap = max(0, min(int(overlap), tile - 16))
     if w <= tile and h <= tile:
+        # Une seule tuile = image entiere -> pas de duplication possible: denoise demande.
         return _refine_whole(pipe, image, denoise, steps, prompt, seed)
+
+    # Anti-duplication 1: prompt vide par tuile (le prompt global decrit toute la compo).
+    prompt = _tile_prompt(prompt)
+    if not (prompt or "").strip():
+        _log("refine tiled: prompt vide par tuile (anti-duplication; regle "
+             "REFINE_TILE_PROMPT).")
+    # Anti-duplication 2 (filet): a fort denoise chaque tuile peut encore deriver.
+    denoise = float(denoise)
+    if REFINE_TILE_DENOISE_CAP > 0 and denoise > REFINE_TILE_DENOISE_CAP:
+        _log(f"refine tiled: denoise {denoise:.2f} > plafond {REFINE_TILE_DENOISE_CAP:.2f}"
+             f" -> reduit a {REFINE_TILE_DENOISE_CAP:.2f} (regle REFINE_TILE_DENOISE_CAP).")
+        denoise = REFINE_TILE_DENOISE_CAP
 
     acc = np.zeros((h, w, 3), dtype=np.float32)
     weight = np.zeros((h, w, 1), dtype=np.float32)
@@ -411,9 +490,16 @@ def process_one(image, esrgan_model, factor, denoise, steps, prompt, seed, tile,
     # Etage 2 : Z-Image img2img (image entiere, ou tuiles si refine_tile > 0)
     t0 = time.time()
     pipe = load_pipe()
-    if int(refine_tile) > 0:
+    rt = int(refine_tile)
+    # Auto (rt = 0): whole image tant qu'on reste sous AUTO_REFINE_TILE_ABOVE, au-dela on
+    # tuile a la taille calculee -- plus rapide qu'un whole-image slice, et sans spill.
+    if rt <= 0 and max(target_w, target_h) > AUTO_REFINE_TILE_ABOVE:
+        rt = _pick_refine_tile(target_w, target_h, int(refine_overlap) or 64)
+        _log(f"stage 2/2 refine: {target_w}x{target_h} > {AUTO_REFINE_TILE_ABOVE}px -> "
+             f"auto-tiling (tile {rt}) pour eviter le pic VRAM")
+    if rt > 0:
         refined = _refine_tiled(pipe, upscaled, denoise, steps, prompt, seed,
-                                int(refine_tile), int(refine_overlap))
+                                rt, int(refine_overlap))
     else:
         _log(f"stage 2/2 Z-Image refine: whole image {target_w}x{target_h}, "
              f"denoise {float(denoise):.2f}, {int(steps)} steps ...")
@@ -528,6 +614,8 @@ def run(image, source_folder, esrgan_model, factor, denoise, steps, prompt, seed
     - print_output: imprime le chemin absolu de chaque image sauvee sur stdout
       (contrat machine-parsable pour l'integration externe).
     - refine_tile > 0: passe Z-Image en tuiles (4K+, plafonne le pic VRAM).
+    - refine_tile = 0 (Auto): image entiere, puis auto-tuilage au-dela de
+      AUTO_REFINE_TILE_ABOVE a la taille choisie par _pick_refine_tile.
     """
     if not esrgan_model:
         raise gr.Error(f"No ESRGAN model found in {ESRGAN_DIR}.")
@@ -749,11 +837,14 @@ def build_ui():
                              "sequential=more aggressive, slower. Lowers the VRAM peak.",
                     )
                 with gr.Accordion("Z-Image tiling (4K+)", open=False):
-                    refine_tile = gr.Slider(0, 2048, value=DEFAULT_REFINE_TILE, step=16,
-                                            label="Diffusion tile size (0 = whole image)",
-                                            info="Tiles the Z-Image pass. Caps the VRAM peak and "
-                                                 "enables 4K+ without seams. Try 1024-1280. "
-                                                 "Whole image stays best under ~2048px.")
+                    refine_tile = gr.Dropdown(
+                        choices=REFINE_TILE_CHOICES, value=DEFAULT_REFINE_TILE,
+                        label="Diffusion tile size",
+                        info="Tiles the Z-Image pass: caps the VRAM peak and enables 4K+ "
+                             "without seams. Auto keeps the whole image under "
+                             f"{AUTO_REFINE_TILE_ABOVE}px, then picks the tile that "
+                             "minimises the diffused surface (measured 23% faster than a "
+                             "fixed 1024 at 4096x4096).")
                     refine_overlap = gr.Slider(0, 256, value=DEFAULT_REFINE_OVERLAP, step=16,
                                                label="Diffusion tile overlap (feather)")
                 with gr.Accordion("Save", open=True):

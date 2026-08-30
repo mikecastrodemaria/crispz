@@ -230,7 +230,7 @@ Every UI setting has a CLI flag and a prefs key:
 | ESRGAN tile | `--tile` | `tile` | `760` |
 | Overlap | `--overlap` | `overlap` | `32` |
 | CPU offload (diffusion) | `--cpu-offload` | - | `none` |
-| Diffusion tile (4K+) | `--refine-tile` | - | `0` (whole image) |
+| Diffusion tile (4K+) | `--refine-tile` | "Diffusion tile size" dropdown | `0` = **Auto** |
 | Diffusion tile overlap | `--refine-overlap` | - | `64` |
 | Save mode | `--save-mode` | `save_mode` | `display` |
 | Output folder | `--output-dir` | `output_dir` | `out` |
@@ -441,6 +441,32 @@ each tile is refined separately and recomposed with linear feathering over
 `--refine-overlap` (so seams are invisible). This both **caps the VRAM peak** (one
 tile at a time, independent of the final size) and **enables 4K+**. Try a tile of
 1024-1280 (rounded to a multiple of 16) with overlap 64.
+
+**Auto (the default).** Leave the tile on `Auto` (`--refine-tile 0`) and the refine runs
+on the whole image up to `AUTO_REFINE_TILE_ABOVE` (1664px), then switches to tiling on
+its own -- a whole-image pass beyond that turns on attention slicing (slow) and risks a
+VRAM spill. The tile size is then **computed from the output size** to minimise the
+*tiled surface* (`tiles x tile^2`), which is what the pass actually costs.
+
+Measured on an RTX 5090 at 4096x4096 (denoise 0.40, overlap 64): the cost per pixel is
+flat from 768 to 1024 (1.78 / 1.83 / 1.79 us/px) and only climbs beyond (2.41 at 1536,
+3.00 at 2048) -- so time follows the covered surface, not the tile size. A fixed 1024
+overflows the grid (a step of 960 on 4096 clamps the last tile, which re-covers 832px
+instead of 64 = **1.56x** the image area); Auto picks 896 there (1.20x) and runs in
+**36.7s instead of 46.9s**, with the same 25 tiles and the same 8 seams.
+
+The search is bounded to `[AUTO_REFINE_TILE_MIN, AUTO_REFINE_TILE_MAX]` = `[768, 1024]`:
+below that, seams multiply and each tile sees less context, which visibly changes the
+render. Pick a fixed size in the dropdown (or `--refine-tile 1024`), or set
+`AUTO_REFINE_TILE` to an integer at the top of `app.py`, to force it.
+
+**Tiled refine and duplicates.** Because Auto now tiles on its own past 1664px, the two
+guards from the crispz-studio line come with it: the per-tile prompt is **empty** by
+default (`REFINE_TILE_PROMPT`) and the per-tile denoise is capped at **0.40**
+(`REFINE_TILE_DENOISE_CAP`). The global prompt describes the whole composition, not one
+tile -- feeding it to every tile makes the model redraw the subject inside tiles that are
+only background. A whole-image refine keeps your prompt and denoise untouched: with a
+single pass, no duplication is possible.
 
 ```bash
 # 4K refine, tiled, seam-free
