@@ -30,13 +30,17 @@ Gradio UI + scriptable CLI + interactive CLI with saved preferences.
 ```bash
 # Linux / macOS / WSL
 ./install.sh
+./boot_check.sh    # full diagnostic, then launches the UI
 ./run.sh           # Gradio UI + hardware detection
 ./cli.sh           # interactive CLI with preferences
+./update.sh        # pull + resync deps, safely
 
 # Windows
 install.bat
+boot_check.bat     # full diagnostic, then launches the UI
 run.bat
 cli.bat
+update.bat
 ```
 
 The install scripts:
@@ -47,11 +51,73 @@ The install scripts:
   from your global Python,
 - automatically uninstall a broken `xformers` (built for the wrong torch
   version -> DLL load error when diffusers loads),
-- install the other deps from `requirements.txt`,
+- install the other deps from `requirements.txt` (or `requirements-lock.txt`
+  with `--locked`, see below),
 - verify that `ZImageImg2ImgPipeline` loads,
 - create the `upscale_models/` folder.
 
 `run.sh` / `cli.sh` (and the `.bat`) automatically use `.venv` if it exists.
+
+### Pinned environment (`--locked`)
+
+`requirements.txt` gives the **bounds** ("what must work"). `requirements-lock.txt`
+gives the **exact versions** of an environment actually validated on RTX 5090 /
+CUDA 12.8, including the pinned `diffusers` commit (Z-Image is not in a PyPI
+release). Use it when you want a reproducible install:
+
+```bash
+./install.sh --locked          # install.bat --locked on Windows
+```
+
+Note on Pillow: the lock pins `pillow==12.3.0`, but the install scripts filter
+that line out and install it separately with `--no-deps`. Reason: the Pillow
+image-decoding CVEs are directly reachable here (the app opens images you feed
+it) and are only fixed in 12.x, while `gradio 5.x` still declares `pillow<12` —
+resolving both together yields `ResolutionImpossible`. The `gradio` bound is
+conservative; Pillow 12 was verified against everything this codebase uses.
+
+Two consequences worth knowing, both expected:
+
+- During install, pip **downgrades Pillow below 12 and the script puts 12.3.0
+  back**. That is gradio's transitive bound being resolved, not a bug. The
+  install ends with an explicit `Pillow 12.3.0 OK` check so a genuine regression
+  can never pass unnoticed.
+- `pip check` reports `gradio ... has requirement pillow<12.0`. That is the
+  deliberate deviation described above. If the venv was created with
+  `--system-site-packages`, `pip check` also reports unrelated globally
+  installed packages — those run on your global Python and are unaffected.
+
+### Boot check
+
+`boot_check.bat` / `boot_check.sh` diagnose the machine **before** launching, on
+any card, and stop if the setup cannot work:
+
+1. Python interpreter (prefers `.venv`)
+2. NVIDIA driver / VRAM / temperature (`nvidia-smi`)
+3. `_hw_check.py`: architecture, VRAM, and above all **is `sm_XX` in this torch
+   build?** — this is what catches the "RTX 50xx + non-cu128 torch" case that
+   otherwise fails later with `WinError 127 ... torch_cuda.dll`
+4. `ZImageImg2ImgPipeline` availability
+5. ESRGAN models actually visible in the resolved `ESRGAN_DIR`
+
+Flags: `--no-run` (diagnose only), `--lan` (listen on `0.0.0.0`), `--web`
+(LAN + Cloudflare tunnel; Windows only). Convenience wrappers:
+`boot_check_lan.bat`, `boot_check_web.bat`.
+
+> **`--lan` / `--web` have no authentication.** The UI accepts arbitrary source
+> and output folders, i.e. read/write on this machine. Trusted networks only.
+
+### Updating
+
+```bash
+./update.sh        # update.bat on Windows
+```
+
+It refuses to `git pull` over uncommitted work, only reinstalls dependencies if
+the deps file actually changed (md5), warns if `torch` got swapped (a transitive
+resolution can replace a `+cuXXX` build with a CPU wheel), re-runs the hardware
+check, and lists new keys available in `preferences.example.json`. Flags:
+`--force-deps`, `--no-pull`, `--shared`.
 
 ### venv or not: the `--no-venv` flag
 
@@ -116,6 +182,25 @@ Three ways to change them:
 `zimage_model` accepts either an HF repo (e.g. `Tongyi-MAI/Z-Image-Turbo`) or a
 local path to an already-downloaded `diffusers` folder.
 
+### Transformer override (optional)
+
+`zimage_transformer` / `--zimage-transformer` replaces **only** the transformer,
+keeping the VAE, the text encoder and the tokenizer from the base repo. It
+accepts a single-file `.safetensors`, a `.gguf` (quantized), or a diffusers
+repo/folder. This is the way to run a quantized transformer on a small GPU
+without changing anything else:
+
+```bash
+python app.py --cli -i in.png --zimage-transformer /models/z-image-Q8_0.gguf
+```
+
+Leave it empty to use the base repo's own transformer (the default).
+
+> The GGUF branch mirrors the loading path validated in the sibling FLUX/Qwen
+> forks, but has **not** been exercised against an actual Z-Image GGUF — none was
+> available to test with. The `.safetensors` and repo/folder paths are the
+> well-trodden ones.
+
 ## ESRGAN models
 
 Drop at least one `.pth` or `.safetensors` into `./upscale_models`, or point
@@ -157,6 +242,12 @@ UI at http://127.0.0.1:7860. It includes:
 - **"Save" section** with the same modes as the CLI.
 - **Batch mode**: if you fill in "OR source folder", the uploaded image is ignored
   and the app processes the whole folder.
+- **Load progress**: the first run has to load Z-Image (several minutes on a slow
+  drive). Instead of a frozen UI, the progress bar and the terminal show elapsed
+  time and VRAM filled so far, refreshed every ~2 s.
+- **"Sampler" accordion**: sampler (`euler` / `unipc` / `lcm`) and sigma schedule
+  (`sgm_uniform` / `beta` / `karras` / `exponential`). Applied to the cached pipe
+  without reloading anything.
 
 ### 2) Scriptable CLI
 
@@ -178,7 +269,31 @@ python app.py --cli -i my_image.jpg --save-mode display --denoise 0
 
 # With a TSV log to track timings
 python app.py --cli -i ./my_images --save-mode local --time-log runs.tsv
+
+# Pick the sampler of the refinement pass
+python app.py --cli -i my_image.jpg --sampler unipc --schedule karras
 ```
+
+**Output files are never overwritten.** If the target name already exists, a
+`_2`, `_3`... suffix is appended. This matters most in `alongside` mode over a
+folder you already processed, where the previous results used to be silently
+replaced. The one exception is an explicit `-o file.png`: you chose that exact
+path, so it is honoured as-is.
+
+### Image metadata
+
+Every saved image embeds the settings that produced it — ESRGAN model, factor,
+denoise, steps, seed, prompt, tiling, Z-Image model/transformer, sampler,
+offload mode, timings. In a PNG it lives in a `crispz` text chunk; in JPEG/WebP
+in EXIF `ImageDescription`. Read it back with:
+
+```bash
+python app.py --read-metadata out/photo_upscaled.png
+```
+
+`--no-metadata` disables embedding; `--sidecar-json` additionally writes a
+`<image>.json` next to each output. Both have `preferences.json` equivalents
+(`write_metadata`, `write_sidecar_json`).
 
 ### 3) Interactive CLI with preferences
 
@@ -218,6 +333,7 @@ Every UI setting has a CLI flag and a prefs key:
 |---|---|---|---|
 | ESRGAN_DIR | `--esrgan-dir` | `esrgan_dir` | `./upscale_models` |
 | Z-Image model | `--zimage-model` | `zimage_model` | `Tongyi-MAI/Z-Image-Turbo` |
+| Z-Image transformer override | `--zimage-transformer` | `zimage_transformer` | (empty = base repo) |
 | Source image | `-i` (file or glob) | - | - |
 | Batch source folder | `-i` (folder) or `--input-folder` | - | - |
 | ESRGAN model | `-m` / `--model` | `model` | `4x-ClearRealityV1_Soft.safetensors` |
@@ -232,9 +348,17 @@ Every UI setting has a CLI flag and a prefs key:
 | CPU offload (diffusion) | `--cpu-offload` | - | `none` |
 | Diffusion tile (4K+) | `--refine-tile` | "Diffusion tile size" dropdown | `0` = **Auto** |
 | Diffusion tile overlap | `--refine-overlap` | - | `64` |
+| Sampler | `--sampler` | `sampler` | `euler` |
+| Sigma schedule | `--schedule` | `schedule` | `sgm_uniform` |
+| Embed metadata | `--no-metadata` (to disable) | `write_metadata` | `true` |
+| Sidecar `.json` | `--sidecar-json` | `write_sidecar_json` | `false` |
+| Read metadata (CLI) | `--read-metadata <image>` | - | - |
+| Attention-slicing threshold | - | `attention_slice_above` | `1664` |
+| Load progress | - | `load_progress` | `true` |
 | Save mode | `--save-mode` | `save_mode` | `display` |
 | Output folder | `--output-dir` | `output_dir` | `out` |
 | Output format | `--output-format` | `output_format` | `png` |
+| Filename pattern | `--filename-pattern` | `filename_pattern` | `{date}_{name}_{tag}_{w}x{h}{index}` |
 | Time log (CLI) | `--time-log <file.tsv>` | `time_log` | (empty) |
 | Save paths (CLI) | `--save-paths` | - | - |
 | List models (CLI) | `--list-models` | - | - |
@@ -250,10 +374,53 @@ Save modes:
 | `alongside` | Writes to the **same folder as the source**. Requires a source path (CLI or batch folder). |
 | `custom` | Writes to `output_dir` as-is (typically an absolute path). |
 
-Default naming: `{source_name}_upscaled.{png|webp|jpg}`. On the CLI, `-o` accepts
-a file (overrides auto naming), a folder (equivalent to
-`--save-mode local --output-dir <folder>`), or is omitted (uses
-`--save-mode` / `--output-dir`).
+### Output filename pattern
+
+The output name follows `filename_pattern` (same idea as crispz-studio), set in
+`preferences.json`, with `--filename-pattern`, or in the UI's "Save" section
+(which shows a live example of the resulting name).
+
+Default: `{date}_{name}_{tag}_{w}x{h}{index}` →
+`20260729-144024_photo_upscaled_1664x2432.png`
+
+| Placeholder | Value | Example |
+|---|---|---|
+| `{date}` | timestamp of the run | `20260729-144024` |
+| `{name}` | source filename, no extension | `photo` |
+| `{tag}` | what was done | `upscaled` |
+| `{seed}` | seed, or `rand` if `-1` | `1234` |
+| `{w}` `{h}` | **output** dimensions | `1664` `2432` |
+| `{model}` | ESRGAN model, no extension | `4x-UltraSharp` |
+| `{factor}` | upscale factor | `2x` |
+| `{denoise}` | denoise strength | `d030` |
+| `{index}` | `_2`, `_3`... in batch, else empty | |
+
+Useful variants:
+
+```json
+"{name}_upscaled"                      // crispz's historical naming
+"{name}_{factor}_{model}"              // photo_2x_4x-UltraSharp.png
+"{date}_{name}_seed{seed}_{denoise}"   // fully traceable
+```
+
+The result is sanitised: path separators and characters your filesystem rejects
+are stripped, so a pattern can never write outside the output folder. An unknown
+placeholder falls back to `{name}_{tag}` with a warning rather than losing a
+render that took minutes.
+
+Files are **never overwritten**: an existing name gets a `_2`, `_3`... suffix.
+On the CLI, `-o` accepts a file (overrides both the pattern **and** the
+uniqueness rule), a folder (equivalent to `--save-mode local --output-dir
+<folder>`), or is omitted (uses `--save-mode` / `--output-dir`).
+
+### Downloading from the UI
+
+The "Result (downloadable)" component serves the **actual file written to
+disk**, so the download matches your chosen output format and keeps the embedded
+crispz metadata. (Gradio re-encodes any in-memory image to `webp` by default,
+which both ignored the format setting and stripped the metadata — crispz hands
+it a file path instead.) In `display` mode nothing is saved, so a temporary file
+is written in the chosen format just for the download.
 
 Full `preferences.json` example:
 
@@ -261,6 +428,7 @@ Full `preferences.json` example:
 {
   "esrgan_dir": "D:/Github/sdlibs/models/ESRGAN",
   "zimage_model": "Tongyi-MAI/Z-Image-Turbo",
+  "zimage_transformer": "",
   "model": "4x-ClearRealityV1_Soft.safetensors",
   "factor": 2.0,
   "denoise": 0.30,
@@ -269,12 +437,25 @@ Full `preferences.json` example:
   "seed": -1,
   "tile": 760,
   "overlap": 32,
+  "sampler": "euler",
+  "schedule": "sgm_uniform",
   "save_mode": "local",
   "output_dir": "out",
   "output_format": "png",
-  "time_log": ""
+  "filename_pattern": "{date}_{name}_{tag}_{w}x{h}{index}",
+  "time_log": "",
+  "write_metadata": true,
+  "write_sidecar_json": false,
+  "attention_slice_above": 1664,
+  "load_progress": true
 }
 ```
+
+`attention_slice_above` is the longest side (px) above which attention slicing is
+enabled on the diffusion pass. Slicing trades speed for VRAM, so it is now
+decided **per pass** rather than once at load time: a 1024 tile runs with native
+SDPA attention (faster), a whole 2K+ image gets slicing (safer). Lower this value
+if you hit OOM on large whole-image passes.
 
 ## Timing report
 
@@ -382,9 +563,9 @@ Endpoints:
 
 | Method | Path | Body / result |
 |---|---|---|
-| GET | `/health` | `{status, device, pipe_loaded, offload, idle_timeout}` |
+| GET | `/health` | `{status, device, pipe_loaded, offload, idle_timeout, zimage_model, zimage_transformer, sampler, schedule}` |
 | GET | `/models` | `{esrgan_dir, models:[...]}` |
-| POST | `/upscale` | JSON (`input` path + any setting, incl. `preset`) -> `{output, size, esrgan_s, refine_s, total_s}` |
+| POST | `/upscale` | JSON (`input` path + any setting, incl. `preset`, `sampler`, `schedule`) -> `{output, size, esrgan_s, refine_s, total_s}` |
 | POST | `/unload` | Frees the VRAM now -> `{status:"unloaded"}` |
 
 ```bash
@@ -479,6 +660,21 @@ Measured (RTX 5090, base 832x1216 -> x4 = 3328x4864, tile 1024, denoise 0.30):
 EXIT in ~86s, VRAM peak ~21.7 / 23.0 GB (vs OOM for whole-image 4K). Combine with
 `--cpu-offload` for an even lower peak. Whole-image mode (`--refine-tile 0`) stays
 the default and the best choice under ~2048px (no regression).
+
+---
+
+## Tests
+
+Pure functions only — no GPU, no model, no network. Under a second to run:
+
+```bash
+python tests/test_pure.py        # built-in runner, no extra dependency
+python -m pytest tests/ -q       # same tests, if pytest is installed
+```
+
+They cover dimension alignment, output-path uniqueness, preset application, tile
+feathering / overlap-add reconstruction, load-progress helpers, the slicing
+decision, sampler validation and metadata round-trips. See `tests/README.md`.
 
 ---
 

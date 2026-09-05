@@ -39,9 +39,13 @@ echo === crispz - run ===
 echo Python     = !RUNPY!
 echo ESRGAN_DIR = !ESRGAN_DIR!
 echo.
-echo --- Detection hardware ---
-!RUNPY! _hw_check.py
-echo.
+REM boot_check.bat pose CZ_SKIP_HWCHECK=1: il vient de faire le diagnostic
+REM complet, inutile de le rejouer ici.
+if not defined CZ_SKIP_HWCHECK (
+    echo --- Detection hardware ---
+    !RUNPY! _hw_check.py
+    echo.
+)
 
 echo --- Lancement de l'UI Gradio ---
 echo Ouvre http://127.0.0.1:7860 dans ton navigateur

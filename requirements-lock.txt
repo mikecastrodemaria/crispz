@@ -1,0 +1,65 @@
+# crispz - environnement verrouille, venv ISOLE.
+#
+# POURQUOI CE FICHIER
+# requirements.txt donne les bornes ("ce qui doit marcher"). Ce fichier donne
+# les versions exactes d'un environnement reellement valide sur RTX 5090 /
+# CUDA 12.8, pour reinstaller a l'identique.
+#
+# UTILISATION (venv ISOLE, sans --system-site-packages)
+#   py -3.10 -m venv .venv
+#   .venv\Scripts\python -m pip install --upgrade pip setuptools wheel
+#   .venv\Scripts\python -m pip install -r requirements-lock.txt
+#
+# ATTENTION: install.bat / install.sh creent le venv avec --system-site-packages
+# (heritage du torch global). Ce mode fait aussi heriter diffusers, gradio,
+# numpy et pillow du global -- donc des versions non choisies, partagees avec
+# les autres apps de la machine. Pour un environnement reproductible, creer le
+# venv a la main comme ci-dessus plutot que via install.bat.
+#
+# NE PAS regenerer ce fichier depuis un `pip freeze` d'un venv
+# --system-site-packages: on y capturerait tout le site-packages global, un
+# ensemble non resoluble par pip.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# diffusers: Z-Image n'est pas dans une release PyPI -> epingle sur le commit
+# valide. Meme commit que crispz-studio, qui utilise les memes pipelines ZImage.
+diffusers @ git+https://github.com/huggingface/diffusers@2c7efb95349296cf6bcce981ea036275a82a94df
+
+# socle torch (volontairement hors requirements.txt, indispensable ici)
+torch==2.8.0+cu128
+torchvision==0.23.0+cu128
+torchaudio==2.8.0+cu128
+
+# pile diffusion
+# transformers >= 4.51 obligatoire: Z-Image Turbo utilise un encodeur Qwen3.
+transformers==4.57.6
+accelerate==1.14.0
+safetensors==0.8.0
+huggingface-hub==0.36.2
+sentencepiece==0.2.2
+spandrel==0.4.1
+
+# UI / service
+gradio==5.50.0
+fastapi==0.136.3
+uvicorn==0.35.0
+
+# imagerie / utilitaires
+# NOTE pillow: la version ci-dessous est la VRAIE version voulue (et celle que
+# les scanners de dependances doivent voir), mais install.bat/.sh la FILTRENT de
+# ce fichier au moment du pip install, puis l'installent a part en --no-deps.
+# Raison: les CVE Pillow -- directement atteignables ici, puisque l'app ouvre
+# des images fournies par l'utilisateur -- ne sont corrigees qu'en 12.x, alors
+# que gradio 5.50 declare pillow<12.0. Resoudre les deux ensemble donne
+# ResolutionImpossible. La borne de gradio est conservatrice: verifie sur cette
+# base de code (Image.open, resize LANCZOS, save PNG/WebP/JPEG, PngInfo, EXIF),
+# Pillow 12 fonctionne. Le pin gradio <6 reste volontaire (bug Brotli/h11).
+pillow==12.3.0
+numpy==1.26.4
+# scipy: uniquement pour le schedule "beta" (use_beta_sigmas). Sans lui les
+# autres schedules marchent, seul "beta" retombe sur sgm_uniform.
+scipy==1.14.0
+protobuf==7.35.1
+requests==2.34.2
+tqdm==4.68.3

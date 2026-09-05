@@ -7,10 +7,15 @@
 set -e
 cd "$(dirname "$0")"
 
+# --no-venv / --system : installer sur le Python courant
+# --locked             : utiliser requirements-lock.txt (versions exactes
+#                        validees) au lieu des bornes de requirements.txt
 USE_VENV=1
+USE_LOCK=0
 for a in "$@"; do
     case "$a" in
         --no-venv|--system) USE_VENV=0 ;;
+        --locked) USE_LOCK=1 ;;
     esac
 done
 
@@ -80,8 +85,31 @@ echo "Interpreteur d'install: $RUNPY"
 echo
 
 # 5) Installer les deps (hors torch)
-echo "Installation des dependances..."
-$RUNPY -m pip install -r requirements.txt
+REQFILE=requirements.txt
+if [ "$USE_LOCK" -eq 1 ] && [ -f requirements-lock.txt ]; then REQFILE=requirements-lock.txt; fi
+echo "Installation des dependances depuis $REQFILE ..."
+
+# Pillow est installe A PART, en --no-deps. gradio 5.x declare "pillow<12",
+# alors que les CVE Pillow atteignables ici (l'app ouvre des images fournies par
+# l'utilisateur) ne sont corrigees qu'en 12.x: resoudre les deux ensemble donne
+# ResolutionImpossible. On filtre donc la ligne pillow== du fichier de deps,
+# puis on pose la version corrigee sans re-resoudre le graphe.
+REQTMP="${TMPDIR:-/tmp}/cz_req_nopillow.txt"
+$RUNPY _req_filter.py "$REQFILE" "$REQTMP"
+if ! $RUNPY -m pip install -r "$REQTMP"; then
+    echo "[ERREUR] echec pip install."
+    if [ "$USE_LOCK" -eq 0 ]; then
+        echo "  Si l'erreur est un \"ResolutionImpossible\", relance avec le fichier"
+        echo "  de versions exactes deja validees:"
+        echo "      ./install.sh --locked"
+    fi
+    exit 1
+fi
+$RUNPY -m pip install --no-deps --upgrade "pillow==12.3.0" || true
+# Verification explicite: si Pillow a ete degrade quelque part, on veut le VOIR
+# ici, pas le decouvrir dans un rapport de vulnerabilites.
+$RUNPY -c "import PIL,sys;v=PIL.__version__;ok=int(v.split('.')[0])>=12;print(('Pillow %s OK' % v) if ok else ('[AVERT] Pillow %s installe (<12): encore expose aux CVE de decodage d image' % v));sys.exit(0 if ok else 5)" || \
+    echo "        Correctif: $RUNPY -m pip install --no-deps --upgrade pillow==12.3.0"
 echo
 
 # 6) Verifier ZImageImg2ImgPipeline

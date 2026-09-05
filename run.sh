@@ -36,9 +36,13 @@ echo "=== crispz - run ==="
 echo "Python     = $RUNPY"
 echo "ESRGAN_DIR = $ESRGAN_DIR"
 echo
-echo "--- Detection hardware ---"
-$RUNPY _hw_check.py
-echo
+# boot_check.sh pose CZ_SKIP_HWCHECK=1: il vient de faire le diagnostic
+# complet, inutile de le rejouer ici.
+if [ -z "${CZ_SKIP_HWCHECK:-}" ]; then
+  echo "--- Detection hardware ---"
+  $RUNPY _hw_check.py
+  echo
+fi
 
 echo "--- Lancement de l'UI Gradio ---"
 echo "Ouvre http://127.0.0.1:7860 dans ton navigateur"

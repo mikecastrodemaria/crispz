@@ -1,6 +1,7 @@
 {
   "esrgan_dir": "./upscale_models",
   "zimage_model": "Tongyi-MAI/Z-Image-Turbo",
+  "zimage_transformer": "",
   "model": "4x-ClearRealityV1_Soft.safetensors",
   "factor": 2.0,
   "denoise": 0.30,
@@ -9,8 +10,17 @@
   "seed": -1,
   "tile": 760,
   "overlap": 32,
+  "sampler": "euler",
+  "schedule": "sgm_uniform",
   "save_mode": "display",
   "output_dir": "out",
   "output_format": "png",
-  "time_log": ""
+  "filename_pattern": "{date}_{name}_{tag}_{w}x{h}{index}",
+  "time_log": "",
+  "write_metadata": true,
+  "write_sidecar_json": false,
+  "attention_slice_above": 1664,
+  "load_progress": true,
+  "load_target_vram_gb": 13.0,
+  "load_heartbeat_s": 2.0
 }

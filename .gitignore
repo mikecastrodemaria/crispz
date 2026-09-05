@@ -42,8 +42,12 @@ out/
 output/
 *.tsv
 
-# --- Images de test locales (essais, non versionnees) ---
-tests/
+# --- Tests ---
+# La suite tests/*.py EST versionnee (fonctions pures, aucun GPU requis).
+# Seules les images d'essai deposees a la main dans tests/ sont ignorees.
+tests/*
+!tests/*.py
+!tests/README.md
 
 # --- OS / editeurs ---
 .DS_Store
