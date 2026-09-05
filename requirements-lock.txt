@@ -33,7 +33,7 @@ torchaudio==2.8.0+cu128
 
 # pile diffusion
 # transformers >= 4.51 obligatoire: Z-Image Turbo utilise un encodeur Qwen3.
-transformers==4.57.6
+transformers==5.10.1
 accelerate==1.14.0
 safetensors==0.8.0
 huggingface-hub==0.36.2
