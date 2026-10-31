@@ -55,7 +55,7 @@ uvicorn==0.35.0
 # ResolutionImpossible. La borne de gradio est conservatrice: verifie sur cette
 # base de code (Image.open, resize LANCZOS, save PNG/WebP/JPEG, PngInfo, EXIF),
 # Pillow 12 fonctionne. Le pin gradio <6 reste volontaire (bug Brotli/h11).
-pillow==12.3.0
+pillow==13.0.0
 numpy==1.26.4
 # scipy: uniquement pour le schedule "beta" (use_beta_sigmas). Sans lui les
 # autres schedules marchent, seul "beta" retombe sur sgm_uniform.
